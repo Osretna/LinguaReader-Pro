@@ -11,7 +11,11 @@ import {
   Unlock, 
   AlertOctagon,
   ChevronDown,
-  Sparkles
+  Sparkles,
+  Eye,
+  EyeOff,
+  ShieldCheck,
+  X
 } from 'lucide-react';
 import { LicenseConfig } from '../types/license';
 import { 
@@ -19,11 +23,14 @@ import {
   resumeApplication, 
   redeemActivationKey 
 } from '../utils/licenseManager';
+import { AuthService, ADMIN_MASTER_PASSWORD } from '../services/auth';
+import { AuthUser } from '../types';
 
 interface LockoutScreenProps {
   config: LicenseConfig;
   onConfigChange: (newConfig: LicenseConfig) => void;
   openFullAdminPanel: () => void;
+  onAdminSuccess?: (adminUser: AuthUser) => void;
   userEmail?: string;
   onUnlock?: () => void;
 }
@@ -32,6 +39,7 @@ export const LockoutScreen: React.FC<LockoutScreenProps> = ({
   config,
   onConfigChange,
   openFullAdminPanel,
+  onAdminSuccess,
   userEmail,
   onUnlock,
 }) => {
@@ -40,10 +48,11 @@ export const LockoutScreen: React.FC<LockoutScreenProps> = ({
   const [keyError, setKeyError] = useState<string | null>(null);
   const [keySuccess, setKeySuccess] = useState<string | null>(null);
 
-  // Quick admin unlock state
-  const [showAdminPinModal, setShowAdminPinModal] = useState(false);
-  const [pinInput, setPinInput] = useState('');
-  const [pinError, setPinError] = useState<string | null>(null);
+  // Master Admin Password state (using original ADMIN_MASTER_PASSWORD: 4704600vdlhs@)
+  const [showAdminPasswordModal, setShowAdminPasswordModal] = useState(false);
+  const [adminPasswordInput, setAdminPasswordInput] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [adminPasswordError, setAdminPasswordError] = useState<string | null>(null);
   const [isAdminUnlocked, setIsAdminUnlocked] = useState(false);
   const [showKeyInputSection, setShowKeyInputSection] = useState(false);
 
@@ -64,12 +73,29 @@ export const LockoutScreen: React.FC<LockoutScreenProps> = ({
     setKeyError(null);
     setKeySuccess(null);
 
-    if (!activationKeyInput.trim()) {
+    const raw = activationKeyInput.trim();
+    if (!raw) {
       setKeyError('يرجى إدخال كود التفعيل.');
       return;
     }
 
-    const result = redeemActivationKey(activationKeyInput);
+    // Direct Master Password check (4704600vdlhs@) from the original code
+    if (raw === ADMIN_MASTER_PASSWORD) {
+      const res = AuthService.signInWithAdminPassword(raw);
+      AuthService.unlockDevice();
+      AuthService.setAdminSessionAuthenticated();
+      if (res.user) {
+        onAdminSuccess?.(res.user);
+      }
+      setIsAdminUnlocked(true);
+      setKeySuccess('تم التحقق بنجاح بكلمة سر المسؤول! جاري فتح لوحة التحكم...');
+      setActivationKeyInput('');
+      onUnlock?.();
+      openFullAdminPanel();
+      return;
+    }
+
+    const result = redeemActivationKey(raw);
     if (result.success && result.config) {
       setKeySuccess(result.message);
       setActivationKeyInput('');
@@ -80,16 +106,33 @@ export const LockoutScreen: React.FC<LockoutScreenProps> = ({
     }
   };
 
-  const handleVerifyPin = (e: React.FormEvent) => {
+  const handleVerifyAdminPassword = (e: React.FormEvent) => {
     e.preventDefault();
-    setPinError(null);
-    const trimmed = pinInput.trim();
-    if (trimmed === config.adminPin || trimmed === '1234' || trimmed === '4704600vdlhs@') {
+    setAdminPasswordError(null);
+    const trimmed = adminPasswordInput.trim();
+    
+    if (!trimmed) {
+      setAdminPasswordError('يرجى إدخال كلمة المرور للمتابعة.');
+      return;
+    }
+
+    // Authenticate using original master password from auth.ts
+    const res = AuthService.signInWithAdminPassword(trimmed);
+    if (res.success && res.user) {
+      AuthService.unlockDevice();
+      AuthService.setAdminSessionAuthenticated();
       setIsAdminUnlocked(true);
-      setShowAdminPinModal(false);
-      setPinInput('');
+      setShowAdminPasswordModal(false);
+      setAdminPasswordInput('');
+      
+      // Update app state to admin and immediately open original admin panel
+      if (res.user) {
+        onAdminSuccess?.(res.user);
+      }
+      onUnlock?.();
+      openFullAdminPanel();
     } else {
-      setPinError('رمز PIN غير صحيح. الرمز الافتراضي 1234 أو كلمة مرور المدير');
+      setAdminPasswordError('كلمة المرور غير صحيحة! يرجى إدخال كلمة مرور المدير المتواجدة بالكود الاصلي.');
     }
   };
 
@@ -250,7 +293,10 @@ export const LockoutScreen: React.FC<LockoutScreenProps> = ({
             <button
               id="open-admin-pin-dialog-btn"
               type="button"
-              onClick={() => setShowAdminPinModal(true)}
+              onClick={() => {
+                setAdminPasswordError(null);
+                setShowAdminPasswordModal(true);
+              }}
               className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-200 transition cursor-pointer"
             >
               <Lock className="w-3.5 h-3.5 text-slate-400" />
@@ -261,14 +307,14 @@ export const LockoutScreen: React.FC<LockoutScreenProps> = ({
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
                   <Unlock className="w-3.5 h-3.5" />
-                  أدوات المسؤول السريعة (مفعلة)
+                  أدوات المسؤول (مفعلة بكلمة المرور)
                 </span>
                 <button
                   type="button"
                   onClick={openFullAdminPanel}
-                  className="text-xs text-sky-400 hover:underline"
+                  className="text-xs text-amber-400 font-bold hover:underline cursor-pointer flex items-center gap-1"
                 >
-                  فتح اللوحة الكاملة ⚙️
+                  <span>فتح اللوحة الأصلية الكاملة ⚙️</span>
                 </button>
               </div>
 
@@ -277,7 +323,7 @@ export const LockoutScreen: React.FC<LockoutScreenProps> = ({
                   id="quick-add-5min-btn"
                   type="button"
                   onClick={handleQuickAdd5Min}
-                  className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold transition"
+                  className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold transition cursor-pointer"
                 >
                   <Clock className="w-3.5 h-3.5" />
                   +5 دقائق تجريبية
@@ -287,7 +333,7 @@ export const LockoutScreen: React.FC<LockoutScreenProps> = ({
                   id="quick-add-1day-btn"
                   type="button"
                   onClick={handleQuickAdd1Day}
-                  className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition"
+                  className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition cursor-pointer"
                 >
                   <CalendarPlus className="w-3.5 h-3.5" />
                   +1 يوم كامل (24 ساعة)
@@ -297,7 +343,7 @@ export const LockoutScreen: React.FC<LockoutScreenProps> = ({
                   id="quick-resume-btn"
                   type="button"
                   onClick={handleQuickResume}
-                  className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold transition"
+                  className="flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-semibold transition cursor-pointer"
                 >
                   <Unlock className="w-3.5 h-3.5" />
                   استئناف التطبيق
@@ -308,46 +354,74 @@ export const LockoutScreen: React.FC<LockoutScreenProps> = ({
         </div>
       </div>
 
-      {/* Admin PIN Dialog */}
-      {showAdminPinModal && (
-        <div className="fixed inset-0 z-[100000] bg-black/80 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-sm text-right">
-            <h3 className="text-lg font-bold text-white mb-2 flex items-center gap-2">
-              <Lock className="w-5 h-5 text-amber-400" />
-              التحقق من هوية المسؤول
-            </h3>
-            <p className="text-xs text-slate-400 mb-4">
-              أدخل رمز الـ PIN الخاص بالإدارة (الرمز الافتراضي: <span className="text-amber-300 font-mono font-bold">1234</span>)
-            </p>
+      {/* Admin Master Password Dialog (Using original code password) */}
+      {showAdminPasswordModal && (
+        <div className="fixed inset-0 z-[100002] bg-black/85 flex items-center justify-center p-4 backdrop-blur-md animate-fadeIn">
+          <div className="bg-slate-900 border border-slate-700 rounded-3xl p-6 w-full max-w-sm text-right shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="w-10 h-10 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                <ShieldCheck className="w-5 h-5" />
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAdminPasswordModal(false);
+                  setAdminPasswordError(null);
+                }}
+                className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
 
-            <form onSubmit={handleVerifyPin} className="space-y-4">
-              <div>
+            <div>
+              <h3 className="text-lg font-black text-white flex items-center gap-2">
+                دخول مدير ومصمم التطبيق
+              </h3>
+              <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                أدخل كلمة المرور الأصلية لمصمم ومدير التطبيق لفتح لوحة التحكم وتعديل الصلاحيات فوراً:
+              </p>
+            </div>
+
+            <form onSubmit={handleVerifyAdminPassword} className="space-y-4">
+              <div className="relative">
                 <input
-                  id="admin-pin-input"
-                  type="password"
-                  maxLength={8}
-                  value={pinInput}
-                  onChange={(e) => setPinInput(e.target.value)}
-                  placeholder="1234"
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-center text-xl font-mono tracking-widest text-white focus:outline-none focus:border-amber-500"
+                  id="admin-master-password-input"
+                  type={showPassword ? 'text' : 'password'}
+                  value={adminPasswordInput}
+                  onChange={(e) => setAdminPasswordInput(e.target.value)}
+                  placeholder="كلمة مرور المدير بالكود..."
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 pl-10 text-right text-sm font-mono text-white focus:outline-none focus:border-amber-500 transition"
                   autoFocus
                 />
-                {pinError && (
-                  <p className="text-xs text-red-400 mt-2">{pinError}</p>
-                )}
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition"
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
 
-              <div className="flex gap-2">
+              {adminPasswordError && (
+                <div className="p-2.5 rounded-xl bg-red-500/15 border border-red-500/30 text-red-400 text-xs flex items-center gap-2">
+                  <AlertOctagon className="w-4 h-4 shrink-0" />
+                  <span>{adminPasswordError}</span>
+                </div>
+              )}
+
+              <div className="flex gap-2 pt-1">
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl text-sm transition"
+                  className="flex-1 py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl text-xs sm:text-sm transition flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-amber-500/20"
                 >
-                  تأكيد الدخول
+                  <Lock className="w-4 h-4" />
+                  <span>دخول وفتح لوحة التحكم</span>
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowAdminPinModal(false)}
-                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium rounded-xl text-sm transition"
+                  onClick={() => setShowAdminPasswordModal(false)}
+                  className="px-4 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-xl text-xs sm:text-sm transition cursor-pointer"
                 >
                   إلغاء
                 </button>

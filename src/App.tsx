@@ -11,22 +11,14 @@ import { VoiceLevelTest } from './components/VoiceLevelTest';
 import { ReadingMasteryGuideModal } from './components/ReadingMasteryGuideModal';
 import { GoogleAuthModal } from './components/GoogleAuthModal';
 import { SubscriptionLockModal } from './components/SubscriptionLockModal';
+import { LockoutScreen } from './components/LockoutScreen';
 import { AdminPanelModal } from './components/AdminPanelModal';
 import { GlobalAppLockModal } from './components/GlobalAppLockModal';
-import { LockoutScreen } from './components/LockoutScreen';
-import { FloatingLicenseControl } from './components/FloatingLicenseControl';
-import { LicenseConfig } from './types/license';
-import { 
-  loadLicenseConfig, 
-  subscribeToLicense, 
-  saveLicenseConfig, 
-  addTimeMinutes, 
-  stopApplicationNow, 
-  resumeApplication 
-} from './utils/licenseManager';
 import { TrialBanner } from './components/TrialBanner';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ContentItem, ReaderSettings, UserStats, CEFRLevel, AuthUser } from './types';
+import { LicenseConfig } from './types/license';
+import { loadLicenseConfig, saveLicenseConfig, subscribeToLicense } from './utils/licenseManager';
 import { StorageService, DEFAULT_SETTINGS, DEFAULT_STATS } from './services/storage';
 import { AuthService, OWNER_EMAIL } from './services/auth';
 import { FirebaseService } from './services/firebase';
@@ -44,26 +36,19 @@ export default function App() {
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [isForceUnlocked, setIsForceUnlocked] = useState(false);
 
-  // Global App State (Kill Switch & Broadcast Notifications)
-  const [globalAppState, setGlobalAppState] = useState<{ isAppLocked: boolean; lockReason?: string }>({ isAppLocked: false });
-  const [liveNotice, setLiveNotice] = useState<{ message: string; type: 'success' | 'warning' | 'error' } | null>(null);
-
-  // Reactive License Config & Countdown State
+  // License configuration state for app duration and stop controls
   const [licenseConfig, setLicenseConfig] = useState<LicenseConfig>(() => loadLicenseConfig());
-  const [now, setNow] = useState<number>(Date.now());
 
   useEffect(() => {
     const unsub = subscribeToLicense((newCfg) => {
       setLicenseConfig(newCfg);
     });
-    const interval = setInterval(() => {
-      setNow(Date.now());
-    }, 1000);
-    return () => {
-      unsub();
-      clearInterval(interval);
-    };
+    return () => unsub();
   }, []);
+
+  // Global App State (Kill Switch & Broadcast Notifications)
+  const [globalAppState, setGlobalAppState] = useState<{ isAppLocked: boolean; lockReason?: string }>({ isAppLocked: false });
+  const [liveNotice, setLiveNotice] = useState<{ message: string; type: 'success' | 'warning' | 'error' } | null>(null);
 
   // Other Modals
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -266,6 +251,14 @@ export default function App() {
     setIsForceUnlocked(false);
   };
 
+  const handleAdminSuccess = (adminUser: AuthUser) => {
+    setCurrentUser(adminUser);
+    setIsForceUnlocked(true);
+    setIsAdminModalOpen(true);
+    refreshUser();
+    refreshStats();
+  };
+
   // Check if current user is admin or has active paid/lifetime subscription
   const hasActiveAccess = Boolean(
     currentUser && (
@@ -282,20 +275,8 @@ export default function App() {
     currentUser && (currentUser.subscription?.isExpired || currentUser.subscription?.status === 'expired')
   );
 
-  // License Remaining Time & Manual Stop Check
-  const msRemaining = Math.max(0, licenseConfig.expiresAt - now);
-  const isLicenseExpired = msRemaining <= 0;
-  const isLicenseStopped = licenseConfig.isManuallyStopped;
-
   // The lock screen disappears immediately when unlocked
-  const isLocked = !isForceUnlocked && !hasActiveAccess && !isDevicePermanentlyUnlocked && (isDeviceTrialLocked || isUserExpired);
-
-  // If stopped manually by admin -> ALWAYS locked (shows full-screen lockout)
-  // If license timer expired -> locked!
-  // If user trial expired -> locked!
-  const isAppEffectivelyLocked = isLicenseStopped || (
-    !isForceUnlocked && !hasActiveAccess && (isLicenseExpired || isDeviceTrialLocked || isUserExpired)
-  );
+  const isLocked = !isForceUnlocked && !hasActiveAccess && !isDevicePermanentlyUnlocked && (isDeviceTrialLocked || isUserExpired || licenseConfig.isManuallyStopped);
 
   return (
     <div 
@@ -472,42 +453,22 @@ export default function App() {
         onAdminUnlock={() => setGlobalAppState(prev => ({ ...prev, isAppLocked: false }))}
       />
 
-      {/* Full-Screen Lockout Overlay: Covers 100% of the screen, blocking the app, and displays:
-          "بالرجاء التواصل مع المسؤل علي الواتساب لفتح التطبيق مرة اخري" */}
-      {isAppEffectivelyLocked && (
+      {/* Full-Screen Lockout Barrier:
+          Blocks the entire app when locked/trial expired, displays the exact WhatsApp message,
+          and allows admin login with original code password (4704600vdlhs@) to open original Admin Panel */}
+      {isLocked && (
         <LockoutScreen
           config={licenseConfig}
           onConfigChange={(newCfg) => {
             setLicenseConfig(newCfg);
             saveLicenseConfig(newCfg);
-            if (newCfg.expiresAt > Date.now() && !newCfg.isManuallyStopped) {
-              setIsForceUnlocked(true);
-            }
             refreshUser();
             refreshStats();
           }}
           openFullAdminPanel={() => setIsAdminModalOpen(true)}
+          onAdminSuccess={handleAdminSuccess}
           userEmail={currentUser?.email}
-          onUnlock={() => {
-            setIsForceUnlocked(true);
-            refreshUser();
-            refreshStats();
-          }}
-        />
-      )}
-
-      {/* Floating License Quick Controls with Countdown, +5 Min, +1 Day, and Stop App buttons */}
-      {!isAppEffectivelyLocked && (
-        <FloatingLicenseControl
-          config={licenseConfig}
-          onConfigChange={(newCfg) => {
-            setLicenseConfig(newCfg);
-            saveLicenseConfig(newCfg);
-            refreshUser();
-            refreshStats();
-          }}
-          onOpenAdmin={() => setIsAdminModalOpen(true)}
-          msRemaining={msRemaining}
+          onUnlock={handleUnlockSuccess}
         />
       )}
 

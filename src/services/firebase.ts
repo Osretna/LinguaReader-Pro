@@ -79,6 +79,14 @@ export class FirebaseService {
   private static lastSyncTimestamp: Record<string, number> = {};
 
   /**
+   * Safe key for Firebase Realtime Database paths (disallows '.', '#', '$', '/', '[', ']')
+   */
+  public static toSafeKey(key: string): string {
+    if (!key) return `usr_${Date.now()}`;
+    return key.trim().replace(/[.#$[\]/]/g, '_');
+  }
+
+  /**
    * Check connection status
    */
   public static isConnected(): boolean {
@@ -153,7 +161,7 @@ export class FirebaseService {
    * Resilient against quota exhaustion with debouncing and dual-database sync.
    */
   public static async syncUserToCloud(user: AuthUser): Promise<boolean> {
-    if (!this.isConnected()) return false;
+    if (!this.isConnected() || !user) return false;
 
     // Debounce rapid syncs for the same user within 2 seconds
     const now = Date.now();
@@ -163,30 +171,51 @@ export class FirebaseService {
     }
     this.lastSyncTimestamp[user.id] = now;
 
-    const payload = {
+    const payload: AuthUser = {
       ...user,
       cloudSyncedAt: new Date().toISOString(),
     };
 
+    const safeId = this.toSafeKey(user.id);
+    const safeEmail = user.email ? this.toSafeKey(user.email.toLowerCase()) : null;
+
     let rtdbSuccess = false;
 
-    // 1. Always sync to Realtime Database (High quota & real-time resilience)
+    // 1. Primary: Sync to Realtime Database (Instant, high quota, sub-100ms WebSocket push)
     try {
-      const rtdbUserRef = ref(rtdb, `users/${user.id}`);
+      const rtdbUserRef = ref(rtdb, `users/${safeId}`);
       await set(rtdbUserRef, payload);
+
+      // Also maintain index by email for instant multi-device resolution
+      if (safeEmail) {
+        const rtdbEmailRef = ref(rtdb, `usersByEmail/${safeEmail}`);
+        await set(rtdbEmailRef, payload);
+      }
       rtdbSuccess = true;
     } catch (rtdbErr) {
       console.warn('RTDB sync notice:', rtdbErr);
     }
 
-    // 2. Sync to Firestore if quota is not exhausted
+    // 2. Broadcast via BroadcastChannel for instant 0ms tab-to-tab update
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        const bc = new BroadcastChannel('lingua_realtime_admin_channel');
+        bc.postMessage({
+          type: 'USER_LOGGED_IN',
+          user: payload,
+          timestamp: Date.now(),
+        });
+        bc.close();
+      }
+    } catch {}
+
+    // 3. Sync to Firestore if quota is not exhausted
     if (!this.isFirestoreExhausted) {
       try {
         const userRef = doc(db, 'users', user.id);
         await setDoc(userRef, payload, { merge: true });
       } catch (error: any) {
         if (error?.code === 'resource-exhausted' || error?.message?.includes('Quota exceeded')) {
-          console.warn('Firestore Quota Exceeded. Switching automatically to Realtime Database fallback.');
           this.isFirestoreExhausted = true;
         } else {
           console.warn('Firestore syncUserToCloud notice:', error);
@@ -198,8 +227,8 @@ export class FirebaseService {
   }
 
   /**
-   * Real-time subscription to all users in Firestore / RTDB.
-   * Automatically falls back to Realtime Database on Firestore quota limits.
+   * Real-time subscription to all users across Realtime Database & Firestore.
+   * Merges all sources seamlessly so NO user is ever missed.
    */
   public static subscribeToCloudUsers(
     onUsersUpdated: (users: AuthUser[]) => void
@@ -208,65 +237,120 @@ export class FirebaseService {
 
     let unsubFirestore: (() => void) | null = null;
     let unsubRTDB: (() => void) | null = null;
+    let bc: BroadcastChannel | null = null;
 
-    const setupRTDBListener = () => {
-      try {
-        const rtdbUsersRef = ref(rtdb, 'users');
-        unsubRTDB = onValue(rtdbUsersRef, (snap) => {
-          if (snap.exists()) {
-            const data = snap.val();
-            const list = Object.values(data) as AuthUser[];
-            onUsersUpdated(list);
-          }
-        }, (err) => {
-          console.warn('RTDB subscribe error notice:', err);
-        });
-      } catch (e) {
-        console.warn('RTDB setup listener notice:', e);
-      }
-    };
+    let rtdbUsers: AuthUser[] = [];
+    let firestoreUsers: AuthUser[] = [];
+    let broadcastUsers: AuthUser[] = [];
 
-    // If Firestore is already exhausted, use RTDB directly
-    if (this.isFirestoreExhausted) {
-      setupRTDBListener();
-      return () => {
-        if (unsubRTDB) unsubRTDB();
-      };
-    }
+    const emitUnifiedUsers = () => {
+      const mergedMap = new Map<string, AuthUser>();
 
-    try {
-      const usersRef = collection(db, 'users');
-      const q = query(usersRef, orderBy('lastLoginAt', 'desc'));
-
-      unsubFirestore = onSnapshot(q, (snapshot) => {
-        const usersList: AuthUser[] = [];
-        snapshot.forEach((docSnap) => {
-          usersList.push(docSnap.data() as AuthUser);
-        });
-        onUsersUpdated(usersList);
-      }, (error: any) => {
-        if (error?.code === 'resource-exhausted' || error?.message?.includes('Quota exceeded')) {
-          this.isFirestoreExhausted = true;
-        }
-        console.warn('Firebase subscribeToCloudUsers fallback to RTDB:', error?.message || error);
-        if (unsubFirestore) {
-          try { unsubFirestore(); } catch {}
-          unsubFirestore = null;
-        }
-        setupRTDBListener();
+      // 1. Add Firestore users first
+      firestoreUsers.forEach((u) => {
+        if (!u) return;
+        const key = u.email ? u.email.toLowerCase() : u.id;
+        if (key) mergedMap.set(key, u);
       });
 
-      return () => {
-        if (unsubFirestore) unsubFirestore();
-        if (unsubRTDB) unsubRTDB();
-      };
-    } catch (error) {
-      console.warn('Firebase subscribeToCloudUsers init error, using RTDB:', error);
-      setupRTDBListener();
-      return () => {
-        if (unsubRTDB) unsubRTDB();
-      };
+      // 2. Add local broadcast users
+      broadcastUsers.forEach((u) => {
+        if (!u) return;
+        const key = u.email ? u.email.toLowerCase() : u.id;
+        if (key) mergedMap.set(key, u);
+      });
+
+      // 3. Add RTDB users (authoritative for live real-time state)
+      rtdbUsers.forEach((u) => {
+        if (!u) return;
+        const key = u.email ? u.email.toLowerCase() : u.id;
+        if (key) {
+          const existing = mergedMap.get(key);
+          if (existing) {
+            mergedMap.set(key, {
+              ...existing,
+              ...u,
+              subscription: { ...existing.subscription, ...u.subscription },
+            });
+          } else {
+            mergedMap.set(key, u);
+          }
+        }
+      });
+
+      const sortedList = Array.from(mergedMap.values()).sort((a, b) => {
+        const timeA = new Date(a.lastLoginAt || a.createdAt || 0).getTime();
+        const timeB = new Date(b.lastLoginAt || b.createdAt || 0).getTime();
+        return timeB - timeA;
+      });
+
+      onUsersUpdated(sortedList);
+    };
+
+    // 1. Primary: Always listen to Realtime Database
+    try {
+      const rtdbUsersRef = ref(rtdb, 'users');
+      unsubRTDB = onValue(
+        rtdbUsersRef,
+        (snap) => {
+          if (snap.exists()) {
+            const data = snap.val();
+            rtdbUsers = Object.values(data) as AuthUser[];
+          } else {
+            rtdbUsers = [];
+          }
+          emitUnifiedUsers();
+        },
+        (err) => {
+          console.warn('RTDB subscribe error notice:', err);
+        }
+      );
+    } catch (e) {
+      console.warn('RTDB setup listener notice:', e);
     }
+
+    // 2. Parallel: Listen to Firestore if available
+    try {
+      const usersRef = collection(db, 'users');
+      unsubFirestore = onSnapshot(
+        usersRef,
+        (snapshot) => {
+          const usersList: AuthUser[] = [];
+          snapshot.forEach((docSnap) => {
+            usersList.push(docSnap.data() as AuthUser);
+          });
+          firestoreUsers = usersList;
+          emitUnifiedUsers();
+        },
+        (error: any) => {
+          if (error?.code === 'resource-exhausted' || error?.message?.includes('Quota exceeded')) {
+            this.isFirestoreExhausted = true;
+          }
+          console.warn('Firestore subscription notice (using RTDB):', error?.message || error);
+        }
+      );
+    } catch (error) {
+      console.warn('Firestore subscription error:', error);
+    }
+
+    // 3. Local cross-tab broadcast channel listener
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        bc = new BroadcastChannel('lingua_realtime_admin_channel');
+        bc.onmessage = (event) => {
+          if (event.data?.type === 'USER_LOGGED_IN' && event.data?.user) {
+            broadcastUsers = [event.data.user, ...broadcastUsers];
+            emitUnifiedUsers();
+          }
+        };
+      }
+    } catch {}
+
+    return () => {
+      if (unsubRTDB) unsubRTDB();
+      if (unsubFirestore) unsubFirestore();
+      if (bc) bc.close();
+    };
   }
 
   /**
@@ -286,6 +370,10 @@ export class FirebaseService {
       updatedAt: new Date().toISOString(),
     };
 
+    const safeId = this.toSafeKey(userId);
+    const targetEmail = email || fullUser?.email;
+    const safeEmail = targetEmail ? this.toSafeKey(targetEmail.toLowerCase()) : null;
+
     let rtdbSuccess = false;
 
     // 1. Update in RTDB (Instant real-time push to all connected clients)
@@ -296,19 +384,21 @@ export class FirebaseService {
           subscription: { ...fullUser.subscription, ...subscription },
           updatedAt: new Date().toISOString(),
         };
-        const rtdbUserRef = ref(rtdb, `users/${userId}`);
+        const rtdbUserRef = ref(rtdb, `users/${safeId}`);
         await set(rtdbUserRef, fullPayload);
 
         // Also save indexed by clean email for instant matching
-        const targetEmail = email || fullUser.email;
-        if (targetEmail) {
-          const cleanEmail = targetEmail.toLowerCase().replace(/[.#$[\]/]/g, '_');
-          const rtdbEmailRef = ref(rtdb, `usersByEmail/${cleanEmail}`);
+        if (safeEmail) {
+          const rtdbEmailRef = ref(rtdb, `usersByEmail/${safeEmail}`);
           await set(rtdbEmailRef, fullPayload);
         }
       } else {
-        const rtdbUserRef = ref(rtdb, `users/${userId}/subscription`);
+        const rtdbUserRef = ref(rtdb, `users/${safeId}/subscription`);
         await update(rtdbUserRef, subscription);
+        if (safeEmail) {
+          const rtdbEmailRef = ref(rtdb, `usersByEmail/${safeEmail}/subscription`);
+          await update(rtdbEmailRef, subscription);
+        }
       }
       rtdbSuccess = true;
     } catch (e) {
@@ -322,7 +412,7 @@ export class FirebaseService {
         bc.postMessage({
           type: 'USER_SUBSCRIPTION_UPDATED',
           userId,
-          email: email || fullUser?.email,
+          email: targetEmail,
           subscription,
           user: fullUser ? { ...fullUser, subscription: { ...fullUser.subscription, ...subscription } } : undefined,
           timestamp: Date.now(),
@@ -363,9 +453,11 @@ export class FirebaseService {
     let unsubRTDBEmail: (() => void) | null = null;
     let bc: BroadcastChannel | null = null;
 
+    const safeId = this.toSafeKey(userId);
+
     // 1. RTDB Primary Realtime Listener (Sub-100ms WebSocket push)
     try {
-      const rtdbUserRef = ref(rtdb, `users/${userId}`);
+      const rtdbUserRef = ref(rtdb, `users/${safeId}`);
       unsubRTDBUser = onValue(rtdbUserRef, (snap) => {
         if (snap.exists()) {
           const val = snap.val();
@@ -379,7 +471,7 @@ export class FirebaseService {
 
       // Also listen by sanitized email if provided
       if (userEmail) {
-        const cleanEmail = userEmail.toLowerCase().replace(/[.#$[\]/]/g, '_');
+        const cleanEmail = this.toSafeKey(userEmail.toLowerCase());
         const rtdbEmailRef = ref(rtdb, `usersByEmail/${cleanEmail}`);
         unsubRTDBEmail = onValue(rtdbEmailRef, (snap) => {
           if (snap.exists()) {

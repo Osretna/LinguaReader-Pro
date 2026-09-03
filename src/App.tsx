@@ -57,7 +57,32 @@ export default function App() {
       setIsAuthModalOpen(true);
     } else {
       setCurrentUser(active);
+      FirebaseService.syncUserToCloud(active).catch(() => {});
     }
+
+    // Sync any Firebase Auth user on startup/return
+    const unsubAuth = FirebaseService.onAuthChanged(async (fbUser) => {
+      if (fbUser && fbUser.email) {
+        const current = AuthService.getCurrentUser();
+        if (!current || current.email.toLowerCase() !== fbUser.email.toLowerCase()) {
+          const newUser = AuthService.signInWithGoogle({
+            email: fbUser.email,
+            name: fbUser.displayName || fbUser.email.split('@')[0],
+            picture: fbUser.photoURL || undefined,
+            googleId: fbUser.uid,
+          });
+          setCurrentUser(newUser);
+          setIsAuthModalOpen(false);
+          await FirebaseService.syncUserToCloud(newUser);
+        } else {
+          FirebaseService.syncUserToCloud(current).catch(() => {});
+        }
+      }
+    });
+
+    return () => {
+      unsubAuth?.();
+    };
   }, []);
 
   // Global App Lock & Broadcast real-time listener
@@ -359,6 +384,7 @@ export default function App() {
         onClose={() => setIsAuthModalOpen(false)}
         onSuccess={(user) => {
           setCurrentUser(user);
+          FirebaseService.syncUserToCloud(user).catch(() => {});
           if (user.subscription.status === 'lifetime' || user.subscription.status === 'active' || user.role === 'admin') {
             setIsForceUnlocked(true);
             AuthService.unlockDevice();

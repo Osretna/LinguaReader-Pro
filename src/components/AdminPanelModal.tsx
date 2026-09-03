@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   X, 
   ShieldCheck, 
@@ -123,20 +123,61 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     }
   };
 
-  const allUsers = (cloudUsers && cloudUsers.length > 0) ? cloudUsers : AuthService.getAllUsers();
+  // Combine all user sources (Cloud RTDB + Firestore + Local) so not a single user is ever missed
+  const allUsers = useMemo(() => {
+    const map = new Map<string, AuthUser>();
+
+    // 1. Add local users
+    AuthService.getAllUsers().forEach((u) => {
+      if (u && (u.email || u.id)) {
+        const key = u.email ? u.email.toLowerCase() : u.id;
+        map.set(key, u);
+      }
+    });
+
+    // 2. Overlay cloud users (RTDB / Firestore)
+    (cloudUsers || []).forEach((u) => {
+      if (u && (u.email || u.id)) {
+        const key = u.email ? u.email.toLowerCase() : u.id;
+        const existing = map.get(key);
+        if (existing) {
+          map.set(key, {
+            ...existing,
+            ...u,
+            subscription: { ...existing.subscription, ...u.subscription },
+          });
+        } else {
+          map.set(key, u);
+        }
+      }
+    });
+
+    return Array.from(map.values()).sort((a, b) => {
+      const timeA = new Date(a.lastLoginAt || a.createdAt || 0).getTime();
+      const timeB = new Date(b.lastLoginAt || b.createdAt || 0).getTime();
+      return timeB - timeA;
+    });
+  }, [cloudUsers]);
+
   const allLicenses = AuthService.getAllLicenseKeys();
 
   const filteredUsers = allUsers.filter(u => 
-    u.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    u.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    u.id.toLowerCase().includes(searchQuery.toLowerCase())
+    (u.email || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (u.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (u.id || '').toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const handleGrantPermission = async (userOrId: AuthUser | string, duration: 'lifetime' | number) => {
-    const userObj = typeof userOrId === 'object' && userOrId !== null ? userOrId : (
-      (cloudUsers || []).find(u => u.id === userOrId || u.email.toLowerCase() === (userOrId as string).toLowerCase()) ||
-      AuthService.getAllUsers().find(u => u.id === userOrId || u.email.toLowerCase() === (userOrId as string).toLowerCase())
+  const findUserObj = (userOrId: AuthUser | string): AuthUser | undefined => {
+    if (typeof userOrId === 'object' && userOrId !== null) return userOrId;
+    const query = (userOrId as string).toLowerCase().trim();
+    return allUsers.find(u => 
+      u.id === userOrId || 
+      (u.email && u.email.toLowerCase() === query)
     );
+  };
+
+  const handleGrantPermission = async (userOrId: AuthUser | string, duration: 'lifetime' | number) => {
+    const userObj = findUserObj(userOrId);
 
     if (!userObj) {
       setNotice({ text: 'المستخدم غير موجود', type: 'error' });
@@ -160,10 +201,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   };
 
   const handleResetTrial = async (userOrId: AuthUser | string) => {
-    const userObj = typeof userOrId === 'object' && userOrId !== null ? userOrId : (
-      (cloudUsers || []).find(u => u.id === userOrId || u.email.toLowerCase() === (userOrId as string).toLowerCase()) ||
-      AuthService.getAllUsers().find(u => u.id === userOrId || u.email.toLowerCase() === (userOrId as string).toLowerCase())
-    );
+    const userObj = findUserObj(userOrId);
 
     if (!userObj) {
       setNotice({ text: 'المستخدم غير موجود', type: 'error' });
@@ -197,10 +235,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   };
 
   const handleRevoke = async (userOrId: AuthUser | string) => {
-    const userObj = typeof userOrId === 'object' && userOrId !== null ? userOrId : (
-      (cloudUsers || []).find(u => u.id === userOrId || u.email.toLowerCase() === (userOrId as string).toLowerCase()) ||
-      AuthService.getAllUsers().find(u => u.id === userOrId || u.email.toLowerCase() === (userOrId as string).toLowerCase())
-    );
+    const userObj = findUserObj(userOrId);
 
     if (!userObj) {
       setNotice({ text: 'المستخدم غير موجود', type: 'error' });
@@ -585,13 +620,28 @@ export const firebaseConfig = {
                     />
                   </div>
 
-                  <button
-                    onClick={() => setShowAddUser(!showAddUser)}
-                    className="flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs transition shadow-xs cursor-pointer"
-                  >
-                    <PlusCircle className="w-4 h-4" />
-                    <span>{isArabic ? 'إضافة وتفعيل مشترك جديد' : 'Add & Activate User'}</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onRefreshData();
+                        setNotice({ text: isArabic ? 'تم تحديث قائمة المشتركين من السحابة بنجاح 🔄' : 'Refreshed user list from cloud', type: 'success' });
+                      }}
+                      className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition cursor-pointer"
+                      title={isArabic ? 'تحديث المشتركين لحظياً' : 'Refresh Users'}
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>{isArabic ? 'تحديث' : 'Refresh'}</span>
+                    </button>
+
+                    <button
+                      onClick={() => setShowAddUser(!showAddUser)}
+                      className="flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs transition shadow-xs cursor-pointer"
+                    >
+                      <PlusCircle className="w-4 h-4" />
+                      <span>{isArabic ? 'إضافة وتفعيل مشترك جديد' : 'Add & Activate User'}</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Add User Form Drawer */}
@@ -663,7 +713,7 @@ export const firebaseConfig = {
                   ) : (
                     filteredUsers.map((user) => {
                       const sub = user.subscription;
-                      const isOwner = user.email.toLowerCase() === OWNER_EMAIL.toLowerCase();
+                      const isOwner = user.email ? user.email.toLowerCase() === OWNER_EMAIL.toLowerCase() : false;
 
                       return (
                         <div 
@@ -673,8 +723,8 @@ export const firebaseConfig = {
                           {/* User Info */}
                           <div className="flex items-center gap-3">
                             <img 
-                              src={user.avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.email}`} 
-                              alt={user.name} 
+                              src={user.avatarUrl || user.picture || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.email || user.id}`} 
+                              alt={user.name || 'User'} 
                               className="w-10 h-10 rounded-full border border-slate-200 bg-slate-100"
                             />
                             <div>

@@ -134,10 +134,14 @@ export interface AuthUser {
   email: string;
   name: string;
   avatarUrl?: string;
+  picture?: string;
   role: UserRole;
   createdAt: string;
   lastLoginAt: string;
   subscription: UserSubscription;
+  cloudSyncedAt?: string;
+  updatedAt?: string;
+  googleId?: string;
 }
 
 export interface LicenseKey {

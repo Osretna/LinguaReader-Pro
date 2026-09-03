@@ -138,7 +138,7 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
   };
 
   // Direct fast entry with email
-  const handleFastEntry = () => {
+  const handleFastEntry = async () => {
     if (!email || !email.includes('@')) {
       setError(isArabic ? 'يرجى كتابة بريدك الإلكتروني أولاً' : 'Please enter your email');
       return;
@@ -147,7 +147,7 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
       email: email.trim().toLowerCase(),
       name: name || email.split('@')[0],
     });
-    FirebaseService.syncUserToCloud(user).catch(() => {});
+    await FirebaseService.syncUserToCloud(user);
     onSuccess(user);
     onClose();
   };

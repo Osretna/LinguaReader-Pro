@@ -31,6 +31,12 @@ import {
 } from '../services/auth';
 import { FirebaseService, isFirebaseConfigured, firebaseConfig } from '../services/firebase';
 import { AuthUser, LicenseKey, SubscriptionPlan } from '../types';
+import { 
+  addTimeMinutes, 
+  stopApplicationNow, 
+  resumeApplication, 
+  loadLicenseConfig 
+} from '../utils/licenseManager';
 
 interface AdminPanelModalProps {
   isOpen: boolean;
@@ -624,6 +630,71 @@ export const firebaseConfig = {
                   </span>
                 </div>
 
+                {/* ⏱️ 3. Quick License Validity & Lock Control Card */}
+                <div className="p-4 rounded-2xl bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 border border-indigo-500/30 text-white shadow-lg space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-amber-400" />
+                      <h4 className="text-xs font-bold text-white">
+                        {isArabic ? 'التحكم الفوري في صلاحية التطبيق (إضافة يوم / 5 دقائق / وقف التطبيق):' : 'Instant License Controls:'}
+                      </h4>
+                    </div>
+                    <span className="text-[10px] text-amber-300 font-semibold">
+                      {isArabic ? 'تطبيق فوري على الشاشة وحجب فوري' : 'Instant on-screen lockout'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <button
+                      onClick={() => {
+                        addTimeMinutes(5, 'إضافة 5 دقائق من لوحة تحكم الإدارة');
+                        setNotice({ text: 'تمت إضافة 5 دقائق تجريبية وتفعيل التطبيق بنجاح ⏱️', type: 'success' });
+                        onRefreshData();
+                      }}
+                      className="px-3 py-2.5 bg-sky-500/20 hover:bg-sky-500/30 border border-sky-500/40 rounded-xl text-sky-200 text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                    >
+                      <Clock className="w-3.5 h-3.5 text-sky-400" />
+                      <span>+5 دقائق</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        addTimeMinutes(1440, 'إضافة يوم كامل من لوحة تحكم الإدارة');
+                        setNotice({ text: 'تمت إضافة يوم كامل (24 ساعة) وتفعيل التطبيق بنجاح 📅', type: 'success' });
+                        onRefreshData();
+                      }}
+                      className="px-3 py-2.5 bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-500/40 rounded-xl text-emerald-200 text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                    >
+                      <Calendar className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>+1 يوم كامل</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        stopApplicationNow('وقف التطبيق من لوحة تحكم الإدارة');
+                        setNotice({ text: 'تم وقف التطبيق وحجب الشاشة بالكامل برسالة الواتساب 🛑', type: 'success' });
+                        onRefreshData();
+                      }}
+                      className="px-3 py-2.5 bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 rounded-xl text-rose-200 text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                    >
+                      <Ban className="w-3.5 h-3.5 text-rose-400" />
+                      <span>وقف التطبيق 🛑</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        resumeApplication();
+                        setNotice({ text: 'تم استئناف تشغيل التطبيق وإلغاء شاشة الحجب 🟢', type: 'success' });
+                        onRefreshData();
+                      }}
+                      className="px-3 py-2.5 bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/40 rounded-xl text-indigo-200 text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                    >
+                      <CheckCircle className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>استئناف التطبيق 🟢</span>
+                    </button>
+                  </div>
+                </div>
+
                 {/* Action Bar: Search & Add User */}
                 <div className="flex flex-col sm:flex-row gap-2 justify-between items-stretch sm:items-center">
                   <div className="relative grow max-w-md">
@@ -791,10 +862,29 @@ export const firebaseConfig = {
                           {/* Permissions Action Buttons */}
                           <div className="flex flex-wrap items-center gap-1.5">
                             
+                            {/* Reset Trial (5 mins) */}
+                            <button
+                              onClick={() => handleResetTrial(user)}
+                              className="px-2 py-1.5 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-700 text-xs font-bold border border-sky-200 transition cursor-pointer flex items-center gap-1"
+                              title="إعادة وتجديد 5 دقائق تجربة مجانية"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                              <span>+5 د</span>
+                            </button>
+
+                            {/* Grant 1 Day */}
+                            <button
+                              onClick={() => handleGrantPermission(user, 1)}
+                              className="px-2 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-200 transition cursor-pointer"
+                              title="تفعيل يوم كامل (24 ساعة)"
+                            >
+                              +1 يوم
+                            </button>
+
                             {/* Grant 1 Month (100 EGP) */}
                             <button
                               onClick={() => handleGrantPermission(user, 30)}
-                              className="px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-200 transition cursor-pointer"
+                              className="px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-800 text-xs font-bold border border-indigo-200 transition cursor-pointer"
                               title="تفعيل شهر كامل مقابل 100 جنيه"
                             >
                               شهر (100 ج.م)

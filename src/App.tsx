@@ -13,6 +13,17 @@ import { GoogleAuthModal } from './components/GoogleAuthModal';
 import { SubscriptionLockModal } from './components/SubscriptionLockModal';
 import { AdminPanelModal } from './components/AdminPanelModal';
 import { GlobalAppLockModal } from './components/GlobalAppLockModal';
+import { LockoutScreen } from './components/LockoutScreen';
+import { FloatingLicenseControl } from './components/FloatingLicenseControl';
+import { LicenseConfig } from './types/license';
+import { 
+  loadLicenseConfig, 
+  subscribeToLicense, 
+  saveLicenseConfig, 
+  addTimeMinutes, 
+  stopApplicationNow, 
+  resumeApplication 
+} from './utils/licenseManager';
 import { TrialBanner } from './components/TrialBanner';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ContentItem, ReaderSettings, UserStats, CEFRLevel, AuthUser } from './types';
@@ -36,6 +47,23 @@ export default function App() {
   // Global App State (Kill Switch & Broadcast Notifications)
   const [globalAppState, setGlobalAppState] = useState<{ isAppLocked: boolean; lockReason?: string }>({ isAppLocked: false });
   const [liveNotice, setLiveNotice] = useState<{ message: string; type: 'success' | 'warning' | 'error' } | null>(null);
+
+  // Reactive License Config & Countdown State
+  const [licenseConfig, setLicenseConfig] = useState<LicenseConfig>(() => loadLicenseConfig());
+  const [now, setNow] = useState<number>(Date.now());
+
+  useEffect(() => {
+    const unsub = subscribeToLicense((newCfg) => {
+      setLicenseConfig(newCfg);
+    });
+    const interval = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => {
+      unsub();
+      clearInterval(interval);
+    };
+  }, []);
 
   // Other Modals
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -254,8 +282,20 @@ export default function App() {
     currentUser && (currentUser.subscription?.isExpired || currentUser.subscription?.status === 'expired')
   );
 
+  // License Remaining Time & Manual Stop Check
+  const msRemaining = Math.max(0, licenseConfig.expiresAt - now);
+  const isLicenseExpired = msRemaining <= 0;
+  const isLicenseStopped = licenseConfig.isManuallyStopped;
+
   // The lock screen disappears immediately when unlocked
   const isLocked = !isForceUnlocked && !hasActiveAccess && !isDevicePermanentlyUnlocked && (isDeviceTrialLocked || isUserExpired);
+
+  // If stopped manually by admin -> ALWAYS locked (shows full-screen lockout)
+  // If license timer expired -> locked!
+  // If user trial expired -> locked!
+  const isAppEffectivelyLocked = isLicenseStopped || (
+    !isForceUnlocked && !hasActiveAccess && (isLicenseExpired || isDeviceTrialLocked || isUserExpired)
+  );
 
   return (
     <div 
@@ -432,14 +472,42 @@ export default function App() {
         onAdminUnlock={() => setGlobalAppState(prev => ({ ...prev, isAppLocked: false }))}
       />
 
-      {/* Subscription / 5-Minute Trial Lock Modal (Barrier) */}
-      {isLocked && (
-        <SubscriptionLockModal
-          user={currentUser}
-          onRefreshUser={refreshUser}
-          onUnlock={handleUnlockSuccess}
-          onSignOut={handleSignOut}
-          isArabic={isArabic}
+      {/* Full-Screen Lockout Overlay: Covers 100% of the screen, blocking the app, and displays:
+          "بالرجاء التواصل مع المسؤل علي الواتساب لفتح التطبيق مرة اخري" */}
+      {isAppEffectivelyLocked && (
+        <LockoutScreen
+          config={licenseConfig}
+          onConfigChange={(newCfg) => {
+            setLicenseConfig(newCfg);
+            saveLicenseConfig(newCfg);
+            if (newCfg.expiresAt > Date.now() && !newCfg.isManuallyStopped) {
+              setIsForceUnlocked(true);
+            }
+            refreshUser();
+            refreshStats();
+          }}
+          openFullAdminPanel={() => setIsAdminModalOpen(true)}
+          userEmail={currentUser?.email}
+          onUnlock={() => {
+            setIsForceUnlocked(true);
+            refreshUser();
+            refreshStats();
+          }}
+        />
+      )}
+
+      {/* Floating License Quick Controls with Countdown, +5 Min, +1 Day, and Stop App buttons */}
+      {!isAppEffectivelyLocked && (
+        <FloatingLicenseControl
+          config={licenseConfig}
+          onConfigChange={(newCfg) => {
+            setLicenseConfig(newCfg);
+            saveLicenseConfig(newCfg);
+            refreshUser();
+            refreshStats();
+          }}
+          onOpenAdmin={() => setIsAdminModalOpen(true)}
+          msRemaining={msRemaining}
         />
       )}
 

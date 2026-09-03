@@ -69,11 +69,18 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const [newPermission, setNewPermission] = useState<'30' | '90' | '365' | 'lifetime'>('30');
 
   // Master Password Authentication state
+  const isOwner = currentUser?.role === 'admin' || (currentUser?.email ? currentUser.email.toLowerCase() === OWNER_EMAIL.toLowerCase() : false);
   const [sessionAuthenticated, setSessionAuthenticated] = useState<boolean>(() => {
-    return AuthService.isAdminSessionAuthenticated();
+    return AuthService.isAdminSessionAuthenticated() || isOwner;
   });
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOwner) {
+      setSessionAuthenticated(true);
+    }
+  }, [isOwner]);
 
   // Global App Lock & Broadcast state (Instant realtime kill switch)
   const [isAppLockedGlobally, setIsAppLockedGlobally] = useState<boolean>(false);
@@ -85,6 +92,52 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   // Live Cloud Users state from Firebase
   const [cloudUsers, setCloudUsers] = useState<AuthUser[] | null>(null);
   const isCloudConnected = FirebaseService.isConnected();
+
+  // Combine all user sources (Cloud RTDB + Firestore + Local) safely with hooks at top level
+  const allUsers = useMemo(() => {
+    const map = new Map<string, AuthUser>();
+
+    // 1. Add local users
+    try {
+      (AuthService.getAllUsers() || []).forEach((u) => {
+        if (u && (u.email || u.id)) {
+          const normalized = AuthService.normalizeUser(u);
+          const key = normalized.email ? normalized.email.toLowerCase() : normalized.id;
+          map.set(key, normalized);
+        }
+      });
+    } catch (e) {
+      console.warn('Local users read notice:', e);
+    }
+
+    // 2. Overlay cloud users (RTDB / Firestore)
+    try {
+      (cloudUsers || []).forEach((u) => {
+        if (u && (u.email || u.id)) {
+          const normalized = AuthService.normalizeUser(u);
+          const key = normalized.email ? normalized.email.toLowerCase() : normalized.id;
+          const existing = map.get(key);
+          if (existing) {
+            map.set(key, AuthService.normalizeUser({
+              ...existing,
+              ...normalized,
+              subscription: { ...(existing.subscription || {}), ...(normalized.subscription || {}) },
+            }));
+          } else {
+            map.set(key, normalized);
+          }
+        }
+      });
+    } catch (e) {
+      console.warn('Cloud users overlay notice:', e);
+    }
+
+    return Array.from(map.values()).sort((a, b) => {
+      const timeA = new Date(a?.lastLoginAt || a?.createdAt || 0).getTime() || 0;
+      const timeB = new Date(b?.lastLoginAt || b?.createdAt || 0).getTime() || 0;
+      return timeB - timeA;
+    });
+  }, [cloudUsers]);
 
   useEffect(() => {
     if (!isOpen || !sessionAuthenticated) return;
@@ -110,8 +163,6 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     };
   }, [isOpen, sessionAuthenticated, isCloudConnected]);
 
-  if (!isOpen) return null;
-
   const handleVerifyPassword = (e: React.FormEvent) => {
     e.preventDefault();
     if (AuthService.verifyAdminPassword(adminPasswordInput)) {
@@ -122,42 +173,6 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
       setPasswordError(isArabic ? 'كلمة المرور غير صحيحة! الوصول مقيد لمصمم التطبيق فقط.' : 'Incorrect password');
     }
   };
-
-  // Combine all user sources (Cloud RTDB + Firestore + Local) so not a single user is ever missed
-  const allUsers = useMemo(() => {
-    const map = new Map<string, AuthUser>();
-
-    // 1. Add local users
-    AuthService.getAllUsers().forEach((u) => {
-      if (u && (u.email || u.id)) {
-        const key = u.email ? u.email.toLowerCase() : u.id;
-        map.set(key, u);
-      }
-    });
-
-    // 2. Overlay cloud users (RTDB / Firestore)
-    (cloudUsers || []).forEach((u) => {
-      if (u && (u.email || u.id)) {
-        const key = u.email ? u.email.toLowerCase() : u.id;
-        const existing = map.get(key);
-        if (existing) {
-          map.set(key, {
-            ...existing,
-            ...u,
-            subscription: { ...existing.subscription, ...u.subscription },
-          });
-        } else {
-          map.set(key, u);
-        }
-      }
-    });
-
-    return Array.from(map.values()).sort((a, b) => {
-      const timeA = new Date(a.lastLoginAt || a.createdAt || 0).getTime();
-      const timeB = new Date(b.lastLoginAt || b.createdAt || 0).getTime();
-      return timeB - timeA;
-    });
-  }, [cloudUsers]);
 
   const allLicenses = AuthService.getAllLicenseKeys();
 
@@ -341,15 +356,17 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
 
   const firebaseConfigSnippet = `// مسار الملف: /src/services/firebase.ts
 export const firebaseConfig = {
-  apiKey: "${firebaseConfig.apiKey}",
-  authDomain: "${firebaseConfig.authDomain}",
-  databaseURL: "${firebaseConfig.databaseURL}",
-  projectId: "${firebaseConfig.projectId}",
-  storageBucket: "${firebaseConfig.storageBucket}",
-  messagingSenderId: "${firebaseConfig.messagingSenderId}",
-  appId: "${firebaseConfig.appId}",
-  measurementId: "${firebaseConfig.measurementId}"
+  apiKey: "${firebaseConfig?.apiKey || ''}",
+  authDomain: "${firebaseConfig?.authDomain || ''}",
+  databaseURL: "${firebaseConfig?.databaseURL || ''}",
+  projectId: "${firebaseConfig?.projectId || ''}",
+  storageBucket: "${firebaseConfig?.storageBucket || ''}",
+  messagingSenderId: "${firebaseConfig?.messagingSenderId || ''}",
+  appId: "${firebaseConfig?.appId || ''}",
+  measurementId: "${firebaseConfig?.measurementId || ''}"
 };`;
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-xs animate-fadeIn">
@@ -711,9 +728,12 @@ export const firebaseConfig = {
                       {isArabic ? 'لم يتم العثور على أي مستخدمين مسجلين بعد' : 'No users found'}
                     </div>
                   ) : (
-                    filteredUsers.map((user) => {
+                    filteredUsers.map((rawUser) => {
+                      const user = AuthService.normalizeUser(rawUser);
                       const sub = user.subscription;
                       const isOwner = user.email ? user.email.toLowerCase() === OWNER_EMAIL.toLowerCase() : false;
+                      const trialMins = Math.max(0, Math.floor((sub.trialSecondsRemaining || 0) / 60));
+                      const expiresValid = sub.expiresAt && !isNaN(new Date(sub.expiresAt).getTime());
 
                       return (
                         <div 
@@ -730,7 +750,7 @@ export const firebaseConfig = {
                             <div>
                               <div className="flex items-center gap-2">
                                 <span className="font-bold text-sm text-slate-900">
-                                  {isOwner ? (isArabic ? 'مدير ومصمم التطبيق' : 'App Designer & Owner') : user.name}
+                                  {isOwner ? (isArabic ? 'مدير ومصمم التطبيق' : 'App Designer & Owner') : (user.name || 'مستخدم')}
                                 </span>
                                 {isOwner && (
                                   <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-black">
@@ -751,18 +771,18 @@ export const firebaseConfig = {
                                     : sub.status === 'active' 
                                     ? 'مشترك نشط' 
                                     : sub.status === 'trial' 
-                                    ? `تجربة (${Math.floor(sub.trialSecondsRemaining / 60)}د)` 
+                                    ? `تجربة (${trialMins}د)` 
                                     : 'منتهي الصلاحية'}
                                 </span>
                               </div>
                               
                               <p className="text-xs text-slate-500 font-mono">
-                                {isOwner ? (isArabic ? 'البريد الإلكتروني محمي ومخفي' : 'Email protected & hidden') : user.email}
+                                {isOwner ? (isArabic ? 'البريد الإلكتروني محمي ومخفي' : 'Email protected & hidden') : (user.email || 'بدون بريد')}
                               </p>
                               
-                              {sub.expiresAt && (
+                              {expiresValid && (
                                 <p className="text-[11px] text-slate-400 mt-0.5">
-                                  ينتهي في: {new Date(sub.expiresAt).toLocaleDateString('ar-EG')}
+                                  ينتهي في: {new Date(sub.expiresAt!).toLocaleDateString('ar-EG')}
                                 </p>
                               )}
                             </div>

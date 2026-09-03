@@ -90,7 +90,7 @@ export const SplitView: React.FC<SplitViewProps> = ({
               مرسل الأوامر ⚡
             </span>
           </div>
-          <AdminPanel state={state} currentTime={currentTime} actions={actions} />
+          <AdminPanel currentUser={currentUser} />
         </div>
 
         {/* Left Column (5 cols): User Live View */}

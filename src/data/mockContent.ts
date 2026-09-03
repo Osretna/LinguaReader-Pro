@@ -1,4 +1,5 @@
 import { ContentItem } from '../types';
+import littlePrinceCover from '../assets/images/little_prince_cover_1788416200678.jpg';
 
 export const INITIAL_CONTENT_ITEMS: ContentItem[] = [
   {
@@ -54,7 +55,7 @@ This was invitation enough.
     description: 'A poetic and philosophical tale about a young prince who visits various planets in space, addressing themes of loneliness, friendship, and love.',
     estimatedMinutes: 5,
     wordCount: 310,
-    coverImage: 'https://images.unsplash.com/photo-1532012164546-f432f2e3edd4?w=600&auto=format&fit=crop&q=80',
+    coverImage: littlePrinceCover,
     text: `Once when I was six years old I saw a magnificent picture in a book called True Stories from Nature, about the primeval forest. It was a picture of a boa constrictor in the act of swallowing an animal.
 
 In the book it said: "Boa constrictors swallow their prey whole, without chewing it. After that they are not able to move, and they sleep through the six months that they need for digestion."

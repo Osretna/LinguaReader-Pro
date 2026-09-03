@@ -11,6 +11,7 @@ export interface WordAnalysis {
   exampleTranslation?: string;
   rootWord?: string;
   grammarNotes?: string;
+  synonyms?: string[];
 }
 
 export interface SentenceAnalysis {

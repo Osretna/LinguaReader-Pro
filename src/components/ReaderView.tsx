@@ -80,7 +80,7 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
     if (!clean || clean.length === 0) return;
 
     const rect = (event.target as HTMLElement).getBoundingClientRect();
-    const containerRect = readerContainerRef.current?.getBoundingClientRect() || { top: 0, left: 0 };
+    const containerRect = readerContainerRef.current?.getBoundingClientRect() || { top: 0, left: 0, width: 600, height: 800 };
     
     // Position popup near clicked word
     setPopupPosition({
@@ -93,7 +93,17 @@ export const ReaderView: React.FC<ReaderViewProps> = ({
 
     try {
       const def = await lookupWord(word, sentence);
-      setSelectedWord(def);
+      setSelectedWord({
+        word: def.word,
+        cleanWord: clean,
+        phonetic: def.phonetic,
+        partOfSpeech: def.partOfSpeech,
+        arabicTranslation: def.translation,
+        englishDefinition: def.definition,
+        exampleSentence: def.exampleSentence,
+        difficulty: def.level,
+        synonyms: def.synonyms,
+      });
       // Auto pronounce if speech synthesis is available
       playPronunciation(clean);
     } catch (e) {

@@ -181,16 +181,16 @@ export const Header: React.FC<HeaderProps> = ({
                   className="flex items-center gap-1.5 p-1 sm:px-2.5 sm:py-1 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold transition cursor-pointer border border-slate-200"
                 >
                   <img
-                    src={user.avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.email}`}
-                    alt={user.name}
+                    src={user.avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.email || user.id}`}
+                    alt={user.name || 'User'}
                     className="w-6 h-6 rounded-full bg-indigo-100"
                   />
-                  <span className="hidden sm:inline truncate max-w-[90px]">{user.name.split(' ')[0]}</span>
+                  <span className="hidden sm:inline truncate max-w-[90px]">{(user.name || user.email || 'User').split(' ')[0]}</span>
                   {user.role === 'admin' ? (
                     <Crown className="w-3.5 h-3.5 text-amber-500" />
-                  ) : user.subscription.status === 'lifetime' ? (
+                  ) : user.subscription?.status === 'lifetime' ? (
                     <span className="w-2 h-2 rounded-full bg-purple-500" />
-                  ) : user.subscription.status === 'active' ? (
+                  ) : user.subscription?.status === 'active' ? (
                     <span className="w-2 h-2 rounded-full bg-emerald-500" />
                   ) : (
                     <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
@@ -206,14 +206,14 @@ export const Header: React.FC<HeaderProps> = ({
                   >
                     <div className="pb-2 mb-2 border-b border-slate-100">
                       <p className="font-bold text-slate-900 text-sm truncate">
-                        {user.role === 'admin' ? (isArabic ? 'مدير ومصمم التطبيق' : 'App Designer') : user.name}
+                        {user.role === 'admin' ? (isArabic ? 'مدير ومصمم التطبيق' : 'App Designer') : (user.name || 'مستخدم')}
                       </p>
                       <p className="text-slate-500 text-[11px] truncate">
-                        {user.role === 'admin' ? (isArabic ? 'حساب الإدارة المعتمد' : 'Admin Account') : user.email}
+                        {user.role === 'admin' ? (isArabic ? 'حساب الإدارة المعتمد' : 'Admin Account') : (user.email || '')}
                       </p>
                       <div className="mt-1.5 flex items-center justify-between">
                         <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-indigo-50 text-indigo-700">
-                          {user.subscription.planNameAr}
+                          {user.subscription?.planNameAr || user.subscription?.planNameEn || (isArabic ? 'مشترك' : 'Member')}
                         </span>
                         {user.role === 'admin' && (
                           <span className="text-[10px] px-2 py-0.5 rounded-full font-black bg-amber-100 text-amber-800">

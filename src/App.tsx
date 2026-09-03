@@ -14,6 +14,7 @@ import { SubscriptionLockModal } from './components/SubscriptionLockModal';
 import { AdminPanelModal } from './components/AdminPanelModal';
 import { GlobalAppLockModal } from './components/GlobalAppLockModal';
 import { TrialBanner } from './components/TrialBanner';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { ContentItem, ReaderSettings, UserStats, CEFRLevel, AuthUser } from './types';
 import { StorageService, DEFAULT_SETTINGS, DEFAULT_STATS } from './services/storage';
 import { AuthService, OWNER_EMAIL } from './services/auth';
@@ -242,15 +243,15 @@ export default function App() {
     currentUser && (
       currentUser.role === 'admin' ||
       currentUser.email?.toLowerCase() === OWNER_EMAIL.toLowerCase() ||
-      currentUser.subscription.status === 'lifetime' ||
-      (currentUser.subscription.status === 'active' && !currentUser.subscription.isExpired)
+      currentUser.subscription?.status === 'lifetime' ||
+      (currentUser.subscription?.status === 'active' && !currentUser.subscription?.isExpired)
     )
   );
 
   const isDevicePermanentlyUnlocked = AuthService.isDeviceUnlocked();
   const isDeviceTrialLocked = !isDevicePermanentlyUnlocked && AuthService.isDeviceLocked();
   const isUserExpired = Boolean(
-    currentUser && (currentUser.subscription.isExpired || currentUser.subscription.status === 'expired')
+    currentUser && (currentUser.subscription?.isExpired || currentUser.subscription?.status === 'expired')
   );
 
   // The lock screen disappears immediately when unlocked
@@ -382,12 +383,17 @@ export default function App() {
       <GoogleAuthModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
-        onSuccess={(user) => {
+        onSuccess={(rawUser) => {
+          const user = AuthService.normalizeUser(rawUser);
           setCurrentUser(user);
           FirebaseService.syncUserToCloud(user).catch(() => {});
           if (user.subscription.status === 'lifetime' || user.subscription.status === 'active' || user.role === 'admin') {
             setIsForceUnlocked(true);
             AuthService.unlockDevice();
+          }
+          if (user.role === 'admin' || user.email?.toLowerCase() === OWNER_EMAIL.toLowerCase()) {
+            AuthService.setAdminSessionAuthenticated();
+            setIsAdminModalOpen(true);
           }
           refreshStats();
         }}
@@ -438,16 +444,18 @@ export default function App() {
       )}
 
       {/* Admin Panel Modal for Owner */}
-      <AdminPanelModal
-        isOpen={isAdminModalOpen}
-        onClose={() => setIsAdminModalOpen(false)}
-        currentUser={currentUser}
-        onRefreshData={() => {
-          refreshUser();
-          refreshStats();
-        }}
-        isArabic={isArabic}
-      />
+      <ErrorBoundary fallbackTitle="لوحة تحكم المدير" fallbackMessage="تعذر فتح لوحة التحكم. اضغط لإعادة المحاولة.">
+        <AdminPanelModal
+          isOpen={isAdminModalOpen}
+          onClose={() => setIsAdminModalOpen(false)}
+          currentUser={currentUser}
+          onRefreshData={() => {
+            refreshUser();
+            refreshStats();
+          }}
+          isArabic={isArabic}
+        />
+      </ErrorBoundary>
 
       {/* Settings Modal */}
       <SettingsModal

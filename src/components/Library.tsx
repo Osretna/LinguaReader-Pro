@@ -357,12 +357,21 @@ export const Library: React.FC<LibraryProps> = ({
                       alt={item.title}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       loading="lazy"
+                      referrerPolicy="no-referrer"
+                      onError={(e) => {
+                        const target = e.currentTarget;
+                        target.style.display = 'none';
+                        const fallback = target.nextElementSibling as HTMLElement | null;
+                        if (fallback) fallback.style.display = 'flex';
+                      }}
                     />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-tr from-indigo-50 to-purple-50 text-indigo-400">
-                      <BookOpen className="w-12 h-12 opacity-60" />
-                    </div>
-                  )}
+                  ) : null}
+                  <div 
+                    className="w-full h-full flex items-center justify-center bg-gradient-to-tr from-indigo-50 to-purple-50 text-indigo-400"
+                    style={{ display: item.coverImage ? 'none' : 'flex' }}
+                  >
+                    <BookOpen className="w-12 h-12 opacity-60" />
+                  </div>
 
                   {/* Badges on Cover */}
                   <div className="absolute top-3 start-3 flex items-center gap-1.5">

@@ -226,6 +226,80 @@ export class FirebaseService {
     return rtdbSuccess || true;
   }
 
+  public static normalizeUser(raw: any): AuthUser {
+    const now = new Date();
+    if (!raw || typeof raw !== 'object') {
+      return {
+        id: `usr_${Date.now()}`,
+        email: '',
+        name: 'مشترك',
+        role: 'user',
+        createdAt: now.toISOString(),
+        lastLoginAt: now.toISOString(),
+        subscription: {
+          status: 'trial',
+          plan: 'trial',
+          planNameAr: 'تجربة مجانية',
+          planNameEn: 'Trial',
+          startedAt: now.toISOString(),
+          expiresAt: null,
+          trialSecondsTotal: 300,
+          trialSecondsRemaining: 300,
+          trialEndsAt: new Date(now.getTime() + 300 * 1000).toISOString(),
+          isExpired: false,
+        }
+      };
+    }
+
+    const email = (raw.email || '').trim();
+    const isOwner = email.toLowerCase() === 'nesmanagahhassan@gmail.com' || raw.role === 'admin';
+    const subRaw = raw.subscription && typeof raw.subscription === 'object' ? raw.subscription : {};
+
+    const subscription: UserSubscription = isOwner
+      ? {
+          status: 'lifetime',
+          plan: 'lifetime',
+          planNameAr: 'حساب المدير والمصمم (وصول دائم)',
+          planNameEn: 'Owner & Admin (Lifetime)',
+          startedAt: subRaw.startedAt || raw.createdAt || now.toISOString(),
+          expiresAt: null,
+          trialSecondsTotal: 300,
+          trialSecondsRemaining: 300,
+          trialEndsAt: null,
+          isExpired: false,
+          notes: subRaw.notes || 'مدير ومصمم التطبيق',
+        }
+      : {
+          status: subRaw.status || (subRaw.isExpired ? 'expired' : 'trial'),
+          plan: subRaw.plan || (subRaw.status === 'active' ? 'monthly' : subRaw.status === 'lifetime' ? 'lifetime' : 'trial'),
+          planNameAr: subRaw.planNameAr || (subRaw.status === 'lifetime' ? 'وصول دائم' : subRaw.status === 'active' ? 'اشتراك شهري' : 'تجربة مجانية (5 دقائق)'),
+          planNameEn: subRaw.planNameEn || (subRaw.status === 'lifetime' ? 'Lifetime' : subRaw.status === 'active' ? 'Monthly' : 'Trial (5m)'),
+          startedAt: subRaw.startedAt || raw.createdAt || now.toISOString(),
+          expiresAt: subRaw.expiresAt || null,
+          trialSecondsTotal: typeof subRaw.trialSecondsTotal === 'number' ? subRaw.trialSecondsTotal : 300,
+          trialSecondsRemaining: typeof subRaw.trialSecondsRemaining === 'number' ? Math.max(0, subRaw.trialSecondsRemaining) : 0,
+          trialEndsAt: subRaw.trialEndsAt || null,
+          isExpired: Boolean(subRaw.isExpired || subRaw.status === 'expired'),
+          notes: subRaw.notes,
+        };
+
+    const cleanName = raw.name && typeof raw.name === 'string' && raw.name.trim().length > 0
+      ? raw.name.trim()
+      : (email ? email.split('@')[0] : 'مشترك');
+
+    return {
+      ...raw,
+      id: raw.id || (email ? `usr_${email}` : `usr_${Date.now()}`),
+      email: email,
+      name: isOwner ? 'مدير ومصمم التطبيق' : cleanName,
+      role: isOwner ? 'admin' : (raw.role || 'user'),
+      avatarUrl: raw.avatarUrl,
+      createdAt: raw.createdAt || now.toISOString(),
+      lastLoginAt: raw.lastLoginAt || now.toISOString(),
+      subscription,
+    };
+  }
+
   /**
    * Real-time subscription to all users across Realtime Database & Firestore.
    * Merges all sources seamlessly so NO user is ever missed.
@@ -247,31 +321,34 @@ export class FirebaseService {
       const mergedMap = new Map<string, AuthUser>();
 
       // 1. Add Firestore users first
-      firestoreUsers.forEach((u) => {
-        if (!u) return;
+      firestoreUsers.forEach((raw) => {
+        if (!raw || typeof raw !== 'object') return;
+        const u = FirebaseService.normalizeUser(raw);
         const key = u.email ? u.email.toLowerCase() : u.id;
         if (key) mergedMap.set(key, u);
       });
 
       // 2. Add local broadcast users
-      broadcastUsers.forEach((u) => {
-        if (!u) return;
+      broadcastUsers.forEach((raw) => {
+        if (!raw || typeof raw !== 'object') return;
+        const u = FirebaseService.normalizeUser(raw);
         const key = u.email ? u.email.toLowerCase() : u.id;
         if (key) mergedMap.set(key, u);
       });
 
       // 3. Add RTDB users (authoritative for live real-time state)
-      rtdbUsers.forEach((u) => {
-        if (!u) return;
+      rtdbUsers.forEach((raw) => {
+        if (!raw || typeof raw !== 'object') return;
+        const u = FirebaseService.normalizeUser(raw);
         const key = u.email ? u.email.toLowerCase() : u.id;
         if (key) {
           const existing = mergedMap.get(key);
           if (existing) {
-            mergedMap.set(key, {
+            mergedMap.set(key, FirebaseService.normalizeUser({
               ...existing,
               ...u,
-              subscription: { ...existing.subscription, ...u.subscription },
-            });
+              subscription: { ...(existing.subscription || {}), ...(u.subscription || {}) },
+            }));
           } else {
             mergedMap.set(key, u);
           }
@@ -279,8 +356,8 @@ export class FirebaseService {
       });
 
       const sortedList = Array.from(mergedMap.values()).sort((a, b) => {
-        const timeA = new Date(a.lastLoginAt || a.createdAt || 0).getTime();
-        const timeB = new Date(b.lastLoginAt || b.createdAt || 0).getTime();
+        const timeA = new Date(a?.lastLoginAt || a?.createdAt || 0).getTime() || 0;
+        const timeB = new Date(b?.lastLoginAt || b?.createdAt || 0).getTime() || 0;
         return timeB - timeA;
       });
 
@@ -295,7 +372,9 @@ export class FirebaseService {
         (snap) => {
           if (snap.exists()) {
             const data = snap.val();
-            rtdbUsers = Object.values(data) as AuthUser[];
+            rtdbUsers = data && typeof data === 'object'
+              ? (Object.values(data).filter(v => v && typeof v === 'object') as AuthUser[])
+              : [];
           } else {
             rtdbUsers = [];
           }
@@ -462,7 +541,7 @@ export class FirebaseService {
         if (snap.exists()) {
           const val = snap.val();
           if (val && (val.id || val.email)) {
-            onUserChanged(val as AuthUser);
+            onUserChanged(FirebaseService.normalizeUser(val));
           }
         }
       }, (err) => {
@@ -477,7 +556,7 @@ export class FirebaseService {
           if (snap.exists()) {
             const val = snap.val();
             if (val && (val.id || val.email)) {
-              onUserChanged(val as AuthUser);
+              onUserChanged(FirebaseService.normalizeUser(val));
             }
           }
         });
@@ -498,7 +577,7 @@ export class FirebaseService {
               (userEmail && data.email && data.email.toLowerCase() === userEmail.toLowerCase())
             ) {
               if (data.user) {
-                onUserChanged(data.user);
+                onUserChanged(FirebaseService.normalizeUser(data.user));
               }
             }
           }
@@ -512,7 +591,7 @@ export class FirebaseService {
         const userRef = doc(db, 'users', userId);
         unsubFirestore = onSnapshot(userRef, (docSnap) => {
           if (docSnap.exists()) {
-            onUserChanged(docSnap.data() as AuthUser);
+            onUserChanged(FirebaseService.normalizeUser(docSnap.data()));
           }
         }, (err: any) => {
           if (err?.code === 'resource-exhausted' || err?.message?.includes('Quota exceeded')) {

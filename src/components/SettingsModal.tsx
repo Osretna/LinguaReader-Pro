@@ -18,9 +18,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onSaveSettings,
   isArabic,
 }) => {
-  if (!isOpen) return null;
-
   const [testedAudio, setTestedAudio] = useState(false);
+
+  if (!isOpen) return null;
 
   const testAudioVoice = () => {
     setTestedAudio(true);

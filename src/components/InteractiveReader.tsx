@@ -116,7 +116,7 @@ export const InteractiveReader: React.FC<InteractiveReaderProps> = ({
 
   // Unknown words statistics
   const comprehensionStats = useMemo(() => {
-    const words = item.text.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+    const words = (item.text.toLowerCase().match(/[\p{L}\p{N}]+/gu) || []) as string[];
     const totalWords = words.length;
     if (totalWords === 0) return { percent: 100, unknownCount: 0 };
 

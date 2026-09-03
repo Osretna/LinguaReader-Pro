@@ -153,12 +153,89 @@ export class AuthService {
     return { success: true, message: 'تم فتح التطبيق وتسجيل الدخول بنجاح!', user: adminUser };
   }
 
+  // Normalize any user object to ensure full type safety and prevent runtime rendering crashes
+  public static normalizeUser(raw: any): AuthUser {
+    const now = new Date();
+    if (!raw || typeof raw !== 'object') {
+      return {
+        id: `usr_${Date.now()}`,
+        email: 'user@lingua.app',
+        name: 'مستخدم',
+        createdAt: now.toISOString(),
+        lastLoginAt: now.toISOString(),
+        role: 'user',
+        subscription: {
+          status: 'trial',
+          plan: 'trial',
+          planNameAr: 'تجربة مجانية (5 دقائق)',
+          planNameEn: 'Free Trial (5 minutes)',
+          startedAt: now.toISOString(),
+          expiresAt: null,
+          trialSecondsTotal: TRIAL_DURATION_SECONDS,
+          trialSecondsRemaining: TRIAL_DURATION_SECONDS,
+          trialEndsAt: new Date(now.getTime() + TRIAL_DURATION_SECONDS * 1000).toISOString(),
+          isExpired: false,
+        },
+      };
+    }
+
+    const email = (raw.email || '').trim();
+    const isOwner = email.toLowerCase() === OWNER_EMAIL.toLowerCase() || raw.role === 'admin';
+
+    const subRaw = raw.subscription && typeof raw.subscription === 'object' ? raw.subscription : {};
+
+    const subscription: UserSubscription = isOwner
+      ? {
+          status: 'lifetime',
+          plan: 'lifetime',
+          planNameAr: 'حساب المدير والمصمم (وصول دائم)',
+          planNameEn: 'Owner & Admin (Lifetime)',
+          startedAt: subRaw.startedAt || raw.createdAt || now.toISOString(),
+          expiresAt: null,
+          trialSecondsTotal: TRIAL_DURATION_SECONDS,
+          trialSecondsRemaining: TRIAL_DURATION_SECONDS,
+          trialEndsAt: null,
+          isExpired: false,
+          notes: subRaw.notes || 'مدير ومصمم التطبيق',
+        }
+      : {
+          status: subRaw.status || (subRaw.isExpired ? 'expired' : 'trial'),
+          plan: subRaw.plan || (subRaw.status === 'active' ? 'monthly' : subRaw.status === 'lifetime' ? 'lifetime' : 'trial'),
+          planNameAr: subRaw.planNameAr || (subRaw.status === 'lifetime' ? 'وصول دائم' : subRaw.status === 'active' ? 'اشتراك شهري' : 'تجربة مجانية (5 دقائق)'),
+          planNameEn: subRaw.planNameEn || (subRaw.status === 'lifetime' ? 'Lifetime' : subRaw.status === 'active' ? 'Monthly' : 'Trial (5m)'),
+          startedAt: subRaw.startedAt || raw.createdAt || now.toISOString(),
+          expiresAt: subRaw.expiresAt || null,
+          trialSecondsTotal: typeof subRaw.trialSecondsTotal === 'number' ? subRaw.trialSecondsTotal : TRIAL_DURATION_SECONDS,
+          trialSecondsRemaining: typeof subRaw.trialSecondsRemaining === 'number' ? Math.max(0, subRaw.trialSecondsRemaining) : 0,
+          trialEndsAt: subRaw.trialEndsAt || null,
+          isExpired: Boolean(subRaw.isExpired || subRaw.status === 'expired'),
+          notes: subRaw.notes,
+        };
+
+    const cleanName = raw.name && typeof raw.name === 'string' && raw.name.trim().length > 0
+      ? raw.name.trim()
+      : (email ? email.split('@')[0] : 'مشترك');
+
+    return {
+      ...raw,
+      id: raw.id || (email ? `usr_${email}` : `usr_${Date.now()}`),
+      email: email,
+      name: isOwner ? 'مدير ومصمم التطبيق' : cleanName,
+      role: isOwner ? 'admin' : (raw.role || 'user'),
+      avatarUrl: raw.avatarUrl,
+      createdAt: raw.createdAt || now.toISOString(),
+      lastLoginAt: raw.lastLoginAt || now.toISOString(),
+      subscription,
+    };
+  }
+
   // Get currently logged-in user
   public static getCurrentUser(): AuthUser | null {
     try {
       const data = localStorage.getItem(AUTH_STORAGE_KEY);
       if (!data) return null;
-      const user: AuthUser = JSON.parse(data);
+      const rawUser = JSON.parse(data);
+      const user = this.normalizeUser(rawUser);
       return this.validateUserExpiry(user);
     } catch (e) {
       console.error('Failed to parse current user from localStorage:', e);
@@ -167,7 +244,9 @@ export class AuthService {
   }
 
   // Validate if trial or subscription has expired
-  public static validateUserExpiry(user: AuthUser): AuthUser {
+  public static validateUserExpiry(rawUser: AuthUser): AuthUser {
+    const user = this.normalizeUser(rawUser);
+
     // Owner never expires
     if (user.email.toLowerCase() === OWNER_EMAIL.toLowerCase() || user.role === 'admin') {
       return user;
@@ -184,7 +263,7 @@ export class AuthService {
     if (sub.status === 'active' && sub.expiresAt) {
       const now = new Date().getTime();
       const exp = new Date(sub.expiresAt).getTime();
-      if (now > exp) {
+      if (!isNaN(exp) && now > exp) {
         sub.status = 'expired';
         sub.isExpired = true;
         sub.notes = 'انتهت فترة الاشتراك الشهري';
@@ -201,7 +280,7 @@ export class AuthService {
         sub.trialEndsAt = new Date(Date.now() + sec * 1000).toISOString();
       }
       const ends = new Date(sub.trialEndsAt).getTime();
-      const diffSec = Math.max(0, Math.ceil((ends - Date.now()) / 1000));
+      const diffSec = !isNaN(ends) ? Math.max(0, Math.ceil((ends - Date.now()) / 1000)) : 0;
       sub.trialSecondsRemaining = diffSec;
       if (diffSec <= 0) {
         sub.status = 'expired';
@@ -376,7 +455,9 @@ export class AuthService {
     try {
       const data = localStorage.getItem(ALL_USERS_STORAGE_KEY);
       if (!data) return [];
-      return JSON.parse(data);
+      const parsed = JSON.parse(data);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(u => this.normalizeUser(u)).filter(Boolean);
     } catch (e) {
       console.error('Failed to get all users:', e);
       return [];

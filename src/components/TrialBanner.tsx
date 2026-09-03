@@ -75,7 +75,7 @@ export const TrialBanner: React.FC<TrialBannerProps> = ({
     );
   }
 
-  const sub = user.subscription;
+  const sub = user.subscription || { status: 'trial', trialSecondsRemaining: 300 };
 
   // 3. User in active paid or lifetime subscription
   if (sub.status === 'lifetime' || sub.status === 'active') {
@@ -83,7 +83,7 @@ export const TrialBanner: React.FC<TrialBannerProps> = ({
   }
 
   // 4. Trial active countdown state
-  const remaining = sub.trialSecondsRemaining;
+  const remaining = typeof sub.trialSecondsRemaining === 'number' ? Math.max(0, sub.trialSecondsRemaining) : 0;
   const minutes = Math.floor(remaining / 60);
   const seconds = remaining % 60;
   const formattedTime = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;

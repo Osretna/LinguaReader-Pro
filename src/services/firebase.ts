@@ -1,5 +1,16 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
+  getAuth, 
+  GoogleAuthProvider, 
+  signInWithPopup, 
+  signInWithRedirect, 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signOut as firebaseSignOut,
+  onAuthStateChanged,
+  User as FirebaseUser
+} from 'firebase/auth';
+import { 
   getFirestore, 
   collection, 
   doc, 
@@ -12,31 +23,36 @@ import {
   orderBy,
   Firestore 
 } from 'firebase/firestore';
+import { 
+  getDatabase, 
+  ref, 
+  set, 
+  get, 
+  update, 
+  onValue, 
+  Database 
+} from 'firebase/database';
 import { AuthUser, LicenseKey, UserSubscription } from '../types';
 
 // =========================================================================
-// 🔥 إعدادات الربط بـ Firebase (قاعدة البيانات السحابية المركزية)
+// 🔥 إعدادات الربط بـ Firebase (قاعدة البيانات السحابية والمصادقة المركزية)
 // =========================================================================
-// 📍 مكان هذا الملف: src/services/firebase.ts
-//
-// 📍 خطوات الحصول على هذه البيانات بسهولة:
-// 1. افتح https://console.firebase.google.com/ وسجل دخول بحساب Google.
-// 2. اضغط "Add Project" أو اختر مشروع موجود.
-// 3. اضغط على أيقونة الويب (</>) لإنشاء تطبيق ويب جديد.
-// 4. فعّل Firestore Database بالضغط على "Firestore Database" ثم "Create Database".
-// 5. انسخ بيانات `firebaseConfig` وضعها هنا مباشرة بدلاً من القيم الافتراضية:
+// 📍 مكان هذا الملف: /src/services/firebase.ts
+// 📍 تم ضبط الإعدادات بالقيم الحقيقية الخاصة بمشروعك (linguareader-pro)
 // =========================================================================
 
 export const firebaseConfig = {
-  apiKey: "YOUR_FIREBASE_API_KEY",
-  authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT_ID.appspot.com",
-  messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyCcr6w3KfbTKWyIyflDh-rKyiNuID9DG2E",
+  authDomain: "linguareader-pro.firebaseapp.com",
+  databaseURL: "https://linguareader-pro-default-rtdb.firebaseio.com",
+  projectId: "linguareader-pro",
+  storageBucket: "linguareader-pro.firebasestorage.app",
+  messagingSenderId: "118006367459",
+  appId: "1:118006367459:web:6032a7e156fbed284cb1d6",
+  measurementId: "G-724YXFFXS4"
 };
 
-// Check if the user has replaced placeholder credentials with real Firebase keys
+// Check if Firebase credentials are real
 export function isFirebaseConfigured(): boolean {
   return (
     Boolean(firebaseConfig.apiKey) &&
@@ -46,46 +62,115 @@ export function isFirebaseConfigured(): boolean {
   );
 }
 
-let dbInstance: Firestore | null = null;
+// Initialize Firebase App
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+export const auth = getAuth(app);
+export const db = getFirestore(app);
+export const rtdb = getDatabase(app);
 
-function getDb(): Firestore | null {
-  if (!isFirebaseConfigured()) {
-    return null;
-  }
-  if (!dbInstance) {
-    try {
-      const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-      dbInstance = getFirestore(app);
-    } catch (e) {
-      console.warn('Firebase initialization error:', e);
-      return null;
-    }
-  }
-  return dbInstance;
-}
+// Google Auth Provider
+export const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({
+  prompt: 'select_account'
+});
 
 export class FirebaseService {
   /**
    * Check connection status
    */
   public static isConnected(): boolean {
-    return isFirebaseConfigured() && getDb() !== null;
+    return isFirebaseConfigured() && db !== null;
+  }
+
+  // =======================================================================
+  // 🔐 1. Real Firebase Authentication (Google & Email)
+  // =======================================================================
+
+  /**
+   * Real Google Sign-in with Firebase Auth (Popup with fallback)
+   */
+  public static async signInWithGoogleReal(): Promise<FirebaseUser> {
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      return result.user;
+    } catch (error: any) {
+      console.warn("Popup sign-in notice, attempting redirect fallback:", error);
+      if (error.code === 'auth/popup-blocked' || error.code === 'auth/cancelled-popup-request') {
+        try {
+          await signInWithRedirect(auth, googleProvider);
+        } catch (redirectErr) {
+          console.error("Redirect sign-in error:", redirectErr);
+          throw redirectErr;
+        }
+      }
+      throw error;
+    }
   }
 
   /**
-   * Save or sync any logged-in user to the Cloud Firestore in real time.
-   * This allows the admin to see all users from any device.
+   * Real Email / Password Sign In
+   */
+  public static async signInWithEmailReal(email: string, pass: string): Promise<FirebaseUser> {
+    const result = await signInWithEmailAndPassword(auth, email.trim(), pass);
+    return result.user;
+  }
+
+  /**
+   * Real Email / Password Registration
+   */
+  public static async registerWithEmailReal(email: string, pass: string): Promise<FirebaseUser> {
+    const result = await createUserWithEmailAndPassword(auth, email.trim(), pass);
+    return result.user;
+  }
+
+  /**
+   * Real Sign Out from Firebase
+   */
+  public static async signOutReal(): Promise<void> {
+    try {
+      await firebaseSignOut(auth);
+    } catch (e) {
+      console.warn("Sign out notice:", e);
+    }
+  }
+
+  /**
+   * Listen to Firebase Auth state change
+   */
+  public static onAuthChanged(callback: (user: FirebaseUser | null) => void): (() => void) {
+    return onAuthStateChanged(auth, callback);
+  }
+
+  // =======================================================================
+  // ☁️ 2. Cloud Firestore & Realtime Database User Synchronization
+  // =======================================================================
+
+  /**
+   * Save or sync any logged-in user to Cloud Firestore and RTDB in real time.
+   * This allows the admin (م. محمد) to see all users who entered the app from anywhere.
    */
   public static async syncUserToCloud(user: AuthUser): Promise<boolean> {
-    const db = getDb();
-    if (!db) return false;
+    if (!this.isConnected()) return false;
 
     try {
+      // 1. Firestore sync
       const userRef = doc(db, 'users', user.id);
       await setDoc(userRef, {
         ...user,
         cloudSyncedAt: new Date().toISOString(),
       }, { merge: true });
+
+      // 2. Realtime Database sync (dual compatibility)
+      try {
+        const rtdbUserRef = ref(rtdb, `users/${user.id}`);
+        await set(rtdbUserRef, {
+          ...user,
+          cloudSyncedAt: new Date().toISOString(),
+        });
+      } catch (rtdbErr) {
+        console.warn('RTDB sync notice:', rtdbErr);
+      }
+
       return true;
     } catch (error) {
       console.error('Firebase syncUserToCloud error:', error);
@@ -94,14 +179,13 @@ export class FirebaseService {
   }
 
   /**
-   * Real-time subscription to all users in Firestore.
-   * Admin panel uses this to monitor all registered and active users live.
+   * Real-time subscription to all users in Firestore / RTDB.
+   * Admin panel uses this to monitor all registered users live with instant status.
    */
   public static subscribeToCloudUsers(
     onUsersUpdated: (users: AuthUser[]) => void
   ): (() => void) | null {
-    const db = getDb();
-    if (!db) return null;
+    if (!this.isConnected()) return null;
 
     try {
       const usersRef = collection(db, 'users');
@@ -114,7 +198,18 @@ export class FirebaseService {
         });
         onUsersUpdated(usersList);
       }, (error) => {
-        console.warn('Firebase subscribeToCloudUsers snapshot error:', error);
+        console.warn('Firebase subscribeToCloudUsers snapshot notice, trying RTDB:', error);
+        // Fallback to RTDB
+        try {
+          const rtdbUsersRef = ref(rtdb, 'users');
+          onValue(rtdbUsersRef, (snap) => {
+            if (snap.exists()) {
+              const data = snap.val();
+              const list = Object.values(data) as AuthUser[];
+              onUsersUpdated(list);
+            }
+          });
+        } catch {}
       });
 
       return unsubscribe;
@@ -125,21 +220,30 @@ export class FirebaseService {
   }
 
   /**
-   * Admin updates a user's subscription in Firestore (e.g. grants 30 days or Lifetime).
+   * Admin updates a user's subscription in Firestore & RTDB (e.g. grants 30 days or Lifetime).
    */
   public static async updateUserSubscription(
     userId: string, 
     subscription: Partial<UserSubscription>
   ): Promise<boolean> {
-    const db = getDb();
-    if (!db) return false;
+    if (!this.isConnected()) return false;
+
+    const updates = {
+      subscription: subscription,
+      updatedAt: new Date().toISOString(),
+    };
 
     try {
+      // Update in Firestore
       const userRef = doc(db, 'users', userId);
-      await updateDoc(userRef, {
-        subscription: subscription,
-        updatedAt: new Date().toISOString(),
-      });
+      await updateDoc(userRef, updates);
+
+      // Update in RTDB
+      try {
+        const rtdbUserRef = ref(rtdb, `users/${userId}/subscription`);
+        await update(rtdbUserRef, subscription);
+      } catch {}
+
       return true;
     } catch (error) {
       console.error('Firebase updateUserSubscription error:', error);
@@ -149,14 +253,13 @@ export class FirebaseService {
 
   /**
    * Listen to current user's profile in real time.
-   * If the admin activates this user remotely, their screen unlocks automatically!
+   * If the admin activates this user remotely from their phone, their screen unlocks automatically!
    */
   public static listenToMyUser(
     userId: string, 
     onUserChanged: (user: AuthUser) => void
   ): (() => void) | null {
-    const db = getDb();
-    if (!db) return null;
+    if (!this.isConnected()) return null;
 
     try {
       const userRef = doc(db, 'users', userId);
@@ -164,6 +267,16 @@ export class FirebaseService {
         if (docSnap.exists()) {
           onUserChanged(docSnap.data() as AuthUser);
         }
+      }, (err) => {
+        console.warn('listenToMyUser error fallback to RTDB:', err);
+        try {
+          const rtdbUserRef = ref(rtdb, `users/${userId}`);
+          onValue(rtdbUserRef, (snap) => {
+            if (snap.exists()) {
+              onUserChanged(snap.val() as AuthUser);
+            }
+          });
+        } catch {}
       });
       return unsubscribe;
     } catch (e) {
@@ -172,16 +285,25 @@ export class FirebaseService {
     }
   }
 
+  // =======================================================================
+  // 🔑 3. License Keys Cloud Management
+  // =======================================================================
+
   /**
-   * Save a newly generated license key to Firestore
+   * Save a newly generated license key to Firestore & RTDB
    */
   public static async saveLicenseToCloud(license: LicenseKey): Promise<boolean> {
-    const db = getDb();
-    if (!db) return false;
+    if (!this.isConnected()) return false;
 
     try {
       const licenseRef = doc(db, 'licenses', license.code);
       await setDoc(licenseRef, license, { merge: true });
+
+      try {
+        const rtdbLicenseRef = ref(rtdb, `licenses/${license.code}`);
+        await set(rtdbLicenseRef, license);
+      } catch {}
+
       return true;
     } catch (error) {
       console.error('Firebase saveLicenseToCloud error:', error);
@@ -195,8 +317,7 @@ export class FirebaseService {
   public static subscribeToCloudLicenses(
     onLicensesUpdated: (licenses: LicenseKey[]) => void
   ): (() => void) | null {
-    const db = getDb();
-    if (!db) return null;
+    if (!this.isConnected()) return null;
 
     try {
       const licensesRef = collection(db, 'licenses');
@@ -209,7 +330,7 @@ export class FirebaseService {
         });
         onLicensesUpdated(list);
       }, (err) => {
-        console.warn('Firebase licenses snapshot error:', err);
+        console.warn('Firebase licenses snapshot notice:', err);
       });
 
       return unsubscribe;
@@ -220,19 +341,19 @@ export class FirebaseService {
   }
 
   /**
-   * Redeem a license key directly in Firestore
+   * Redeem a license key directly in Firestore & RTDB
    */
   public static async redeemCloudLicense(
     code: string, 
     userEmail: string
   ): Promise<{ success: boolean; license?: LicenseKey; message: string }> {
-    const db = getDb();
-    if (!db) {
+    if (!this.isConnected()) {
       return { success: false, message: 'قاعدة البيانات غير متصلة' };
     }
 
     try {
-      const licenseRef = doc(db, 'licenses', code.toUpperCase().trim());
+      const cleanCode = code.toUpperCase().trim();
+      const licenseRef = doc(db, 'licenses', cleanCode);
       const snapshot = await getDoc(licenseRef);
 
       if (!snapshot.exists()) {
@@ -244,12 +365,22 @@ export class FirebaseService {
         return { success: false, message: 'تم استخدام هذا الكود من قبل' };
       }
 
-      // Mark as used
+      // Mark as used in Firestore
       await updateDoc(licenseRef, {
         isUsed: true,
         usedByEmail: userEmail,
         usedAt: new Date().toISOString()
       });
+
+      // Update in RTDB
+      try {
+        const rtdbLicenseRef = ref(rtdb, `licenses/${cleanCode}`);
+        await update(rtdbLicenseRef, {
+          isUsed: true,
+          usedByEmail: userEmail,
+          usedAt: new Date().toISOString()
+        });
+      } catch {}
 
       return { 
         success: true, 

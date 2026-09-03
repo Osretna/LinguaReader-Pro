@@ -50,7 +50,7 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const [activeTab, setActiveTab] = useState<'users' | 'licenses' | 'guide' | 'firebase'>('users');
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
-  const [copiedFirebasePath, setCopiedFirebasePath] = useState(false);
+  const [copiedFirebaseSnippet, setCopiedFirebaseSnippet] = useState(false);
   const [targetPhone, setTargetPhone] = useState('');
   
   // Custom days input state
@@ -111,9 +111,13 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     u.id.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const handleGrantPermission = (userId: string, duration: 'lifetime' | number) => {
+  const handleGrantPermission = async (userId: string, duration: 'lifetime' | number) => {
     const res = AuthService.grantUserPermission(userId, duration, 'مدير التطبيق');
     if (res.success) {
+      // Also update in Firebase Cloud
+      if (res.user) {
+        await FirebaseService.syncUserToCloud(res.user);
+      }
       setNotice({ text: res.message, type: 'success' });
       onRefreshData();
     } else {
@@ -121,17 +125,25 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     }
   };
 
-  const handleResetTrial = (userId: string) => {
+  const handleResetTrial = async (userId: string) => {
     const ok = AuthService.resetUserTrial(userId);
     if (ok) {
+      const updatedUser = AuthService.getAllUsers().find(u => u.id === userId);
+      if (updatedUser) {
+        await FirebaseService.syncUserToCloud(updatedUser);
+      }
       setNotice({ text: 'تمت إعادة 5 دقائق تجربة مجانية للمستخدم بنجاح', type: 'success' });
       onRefreshData();
     }
   };
 
-  const handleRevoke = (userId: string) => {
+  const handleRevoke = async (userId: string) => {
     const ok = AuthService.revokeUserAccess(userId);
     if (ok) {
+      const updatedUser = AuthService.getAllUsers().find(u => u.id === userId);
+      if (updatedUser) {
+        await FirebaseService.syncUserToCloud(updatedUser);
+      }
       setNotice({ text: 'تم إيقاف صلاحية المستخدم وقفل الحساب', type: 'success' });
       onRefreshData();
     }
@@ -168,12 +180,27 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
       AuthService.grantUserPermission(created.id, parseInt(newPermission), 'إضافة يدوية');
     }
 
+    // Sync to Cloud
+    FirebaseService.syncUserToCloud(created).catch(() => {});
+
     setNotice({ text: `تمت إضافة المستخدم ${newEmail} وتفعيل الصلاحية بنجاح`, type: 'success' });
     setNewEmail('');
     setNewName('');
     setShowAddUser(false);
     onRefreshData();
   };
+
+  const firebaseConfigSnippet = `// مسار الملف: /src/services/firebase.ts
+export const firebaseConfig = {
+  apiKey: "${firebaseConfig.apiKey}",
+  authDomain: "${firebaseConfig.authDomain}",
+  databaseURL: "${firebaseConfig.databaseURL}",
+  projectId: "${firebaseConfig.projectId}",
+  storageBucket: "${firebaseConfig.storageBucket}",
+  messagingSenderId: "${firebaseConfig.messagingSenderId}",
+  appId: "${firebaseConfig.appId}",
+  measurementId: "${firebaseConfig.measurementId}"
+};`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-xs animate-fadeIn">
@@ -199,8 +226,8 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
               </div>
               <p className="text-xs text-slate-300">
                 {isArabic 
-                  ? 'منح الصلاحيات، تفعيل الاشتراكات (100 ج.م)، وتوليد أكواد التفعيل للمشتركين' 
-                  : 'Manage user permissions, monthly subscriptions (100 EGP), and generate codes'}
+                  ? 'منح الصلاحيات، تفعيل الاشتراكات (100 ج.م)، ومزامنة السحابة Firebase' 
+                  : 'Manage user permissions, monthly subscriptions (100 EGP), and cloud sync'}
               </p>
             </div>
           </div>
@@ -261,406 +288,405 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
         ) : (
           <>
             {/* Navigation Tabs */}
-            <div className="flex border-b border-slate-200 bg-slate-50 px-5 pt-3 gap-3">
-          <button
-            onClick={() => setActiveTab('users')}
-            className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
-              activeTab === 'users'
-                ? 'border-indigo-600 text-indigo-700'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Users className="w-4 h-4" />
-            <span>{isArabic ? `إدارة المشتركين (${allUsers.length})` : `Users (${allUsers.length})`}</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('licenses')}
-            className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
-              activeTab === 'licenses'
-                ? 'border-indigo-600 text-indigo-700'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <KeyRound className="w-4 h-4" />
-            <span>{isArabic ? `أكواد التفعيل (${allLicenses.length})` : `License Keys (${allLicenses.length})`}</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('guide')}
-            className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
-              activeTab === 'guide'
-                ? 'border-indigo-600 text-indigo-700'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Sparkles className="w-4 h-4 text-amber-500" />
-            <span>{isArabic ? 'كيف أفعّل للمشتركين؟' : 'How to Activate'}</span>
-          </button>
-
-          <button
-            onClick={() => setActiveTab('firebase')}
-            className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer ${
-              activeTab === 'firebase'
-                ? 'border-indigo-600 text-indigo-700'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
-          >
-            <Database className="w-4 h-4 text-emerald-600" />
-            <span>{isArabic ? 'ربط السحابة (Firebase)' : 'Firebase Cloud Sync'}</span>
-            <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-black ${
-              isCloudConnected ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
-            }`}>
-              {isCloudConnected ? (isArabic ? 'متصل 🟢' : 'Active 🟢') : (isArabic ? 'محلي 🟡' : 'Local 🟡')}
-            </span>
-          </button>
-        </div>
-
-        {/* Global Alert Notification */}
-        {notice && (
-          <div className={`p-3 mx-5 mt-4 rounded-xl text-xs flex items-center justify-between ${
-            notice.type === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
-          }`}>
-            <div className="flex items-center gap-2">
-              {notice.type === 'success' ? <CheckCircle className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
-              <span>{notice.text}</span>
-            </div>
-            <button onClick={() => setNotice(null)} className="text-slate-400 hover:text-slate-600">
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
-
-        {/* Tab 1: Users & Permissions */}
-        {activeTab === 'users' && (
-          <div className="p-5 overflow-y-auto space-y-4 grow">
-            
-            {/* Action Bar: Search & Add User */}
-            <div className="flex flex-col sm:flex-row gap-2 justify-between items-stretch sm:items-center">
-              <div className="relative grow max-w-md">
-                <Search className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={isArabic ? 'ابحث بالبريد الإلكتروني أو الاسم...' : 'Search by email or name...'}
-                  className="w-full pr-9 pl-3 py-2 rounded-xl border border-slate-200 text-xs focus:border-indigo-500 focus:ring-1 focus:ring-indigo-100 outline-hidden"
-                />
-              </div>
+            <div className="flex border-b border-slate-200 bg-slate-50 px-5 pt-3 gap-3 overflow-x-auto">
+              <button
+                onClick={() => setActiveTab('users')}
+                className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer shrink-0 ${
+                  activeTab === 'users'
+                    ? 'border-indigo-600 text-indigo-700'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <Users className="w-4 h-4" />
+                <span>{isArabic ? `المشتركون المسجلون (${allUsers.length})` : `Users (${allUsers.length})`}</span>
+              </button>
 
               <button
-                onClick={() => setShowAddUser(!showAddUser)}
-                className="flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs transition shadow-xs cursor-pointer"
+                onClick={() => setActiveTab('licenses')}
+                className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer shrink-0 ${
+                  activeTab === 'licenses'
+                    ? 'border-indigo-600 text-indigo-700'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
               >
-                <PlusCircle className="w-4 h-4" />
-                <span>{isArabic ? 'إضافة وتفعيل مشترك جديد' : 'Add & Activate User'}</span>
+                <KeyRound className="w-4 h-4" />
+                <span>{isArabic ? `أكواد التفعيل (${allLicenses.length})` : `License Keys (${allLicenses.length})`}</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('firebase')}
+                className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer shrink-0 ${
+                  activeTab === 'firebase'
+                    ? 'border-indigo-600 text-indigo-700'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <Database className="w-4 h-4 text-emerald-600" />
+                <span>{isArabic ? 'الربط بالفيربيس (Firebase)' : 'Firebase Cloud Sync'}</span>
+                <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-black ${
+                  isCloudConnected ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                }`}>
+                  {isCloudConnected ? (isArabic ? 'متصل بنجاح 🟢' : 'Connected 🟢') : (isArabic ? 'محلي 🟡' : 'Local 🟡')}
+                </span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('guide')}
+                className={`flex items-center gap-2 pb-3 px-3 text-xs font-bold border-b-2 transition cursor-pointer shrink-0 ${
+                  activeTab === 'guide'
+                    ? 'border-indigo-600 text-indigo-700'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <Sparkles className="w-4 h-4 text-amber-500" />
+                <span>{isArabic ? 'دليل استلام الـ 100 ج.م' : 'Activation Guide'}</span>
               </button>
             </div>
 
-            {/* Add User Form Drawer */}
-            {showAddUser && (
-              <form onSubmit={handleAddManualUser} className="p-4 rounded-2xl bg-indigo-50/60 border border-indigo-200 space-y-3">
-                <h4 className="text-xs font-bold text-indigo-900">
-                  {isArabic ? 'إضافة وتفعيل مشترك مباشرة قبل أو بعد تواصله:' : 'Add and Activate User Directly:'}
-                </h4>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">البريد الإلكتروني:</label>
-                    <input
-                      type="email"
-                      required
-                      value={newEmail}
-                      onChange={(e) => setNewEmail(e.target.value)}
-                      placeholder="client@gmail.com"
-                      className="w-full px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">اسم المشترك:</label>
-                    <input
-                      type="text"
-                      value={newName}
-                      onChange={(e) => setNewName(e.target.value)}
-                      placeholder="الاسم"
-                      className="w-full px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">البرمشن / الصلاحية:</label>
-                    <select
-                      value={newPermission}
-                      onChange={(e) => setNewPermission(e.target.value as any)}
-                      className="w-full px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-bold"
-                    >
-                      <option value="30">شهر كامل (100 جنيه)</option>
-                      <option value="90">3 أشهر (300 جنيه)</option>
-                      <option value="365">سنة كاملة (12 شهر)</option>
-                      <option value="lifetime">وصول دائم (مدى الحياة)</option>
-                    </select>
-                  </div>
+            {/* Global Alert Notification */}
+            {notice && (
+              <div className={`p-3 mx-5 mt-4 rounded-xl text-xs flex items-center justify-between ${
+                notice.type === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
+              }`}>
+                <div className="flex items-center gap-2">
+                  {notice.type === 'success' ? <CheckCircle className="w-4 h-4 shrink-0" /> : <AlertCircle className="w-4 h-4 shrink-0" />}
+                  <span>{notice.text}</span>
                 </div>
-                <div className="flex justify-end gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setShowAddUser(false)}
-                    className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-xs font-medium text-slate-600"
-                  >
-                    إلغاء
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-xs"
-                  >
-                    حفظ وتفعيل فوراً
-                  </button>
-                </div>
-              </form>
+                <button onClick={() => setNotice(null)} className="text-slate-400 hover:text-slate-600">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
             )}
 
-            {/* Users List */}
-            <div className="space-y-3">
-              {filteredUsers.length === 0 ? (
-                <div className="text-center py-10 text-slate-400 text-xs">
-                  {isArabic ? 'لم يتم العثور على أي مستخدمين مسجلين بعد' : 'No users found'}
-                </div>
-              ) : (
-                filteredUsers.map((user) => {
-                  const sub = user.subscription;
-                  const isOwner = user.email.toLowerCase() === OWNER_EMAIL.toLowerCase();
-
-                  return (
-                    <div 
-                      key={user.id} 
-                      className="p-4 rounded-2xl border border-slate-200 hover:border-indigo-300 bg-white shadow-xs transition flex flex-col md:flex-row md:items-center justify-between gap-4"
-                    >
-                      {/* User Info */}
-                      <div className="flex items-center gap-3">
-                        <img 
-                          src={user.avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.email}`} 
-                          alt={user.name} 
-                          className="w-10 h-10 rounded-full border border-slate-200 bg-slate-100"
-                        />
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-sm text-slate-900">
-                              {isOwner ? (isArabic ? 'مدير ومصمم التطبيق' : 'App Designer & Owner') : user.name}
-                            </span>
-                            {isOwner && (
-                              <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-black">
-                                {isArabic ? 'المصمم والمدير' : 'Owner'}
-                              </span>
-                            )}
-                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                              sub.status === 'lifetime' 
-                                ? 'bg-purple-100 text-purple-700' 
-                                : sub.status === 'active' 
-                                ? 'bg-emerald-100 text-emerald-700' 
-                                : sub.status === 'trial' 
-                                ? 'bg-blue-100 text-blue-700' 
-                                : 'bg-rose-100 text-rose-700'
-                            }`}>
-                              {sub.status === 'lifetime' 
-                                ? 'مدى الحياة' 
-                                : sub.status === 'active' 
-                                ? 'مشترك نشط' 
-                                : sub.status === 'trial' 
-                                ? `تجربة (${Math.floor(sub.trialSecondsRemaining / 60)}د)` 
-                                : 'منتهي الصلاحية'}
-                            </span>
-                          </div>
-                          
-                          <p className="text-xs text-slate-500 font-mono">
-                            {isOwner ? (isArabic ? 'البريد الإلكتروني محمي ومخفي' : 'Email protected & hidden') : user.email}
-                          </p>
-                          
-                          {sub.expiresAt && (
-                            <p className="text-[11px] text-slate-400 mt-0.5">
-                              ينتهي في: {new Date(sub.expiresAt).toLocaleDateString('ar-EG')}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Permissions Action Buttons */}
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        
-                        {/* Grant 1 Month (100 EGP) */}
-                        <button
-                          onClick={() => handleGrantPermission(user.id, 30)}
-                          className="px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-200 transition cursor-pointer"
-                          title="تفعيل شهر كامل مقابل 100 جنيه"
-                        >
-                          شهر (100 ج.م)
-                        </button>
-
-                        {/* Grant Lifetime Access */}
-                        <button
-                          onClick={() => handleGrantPermission(user.id, 'lifetime')}
-                          className="px-2.5 py-1.5 rounded-lg bg-purple-50 hover:bg-purple-100 text-purple-800 text-xs font-bold border border-purple-200 transition cursor-pointer"
-                          title="إتاحة وصول دائم مدى الحياة"
-                        >
-                          مدى الحياة
-                        </button>
-
-                        {/* Custom Days Input Toggle */}
-                        {customDaysTargetId === user.id ? (
-                          <div className="flex items-center gap-1">
-                            <input
-                              type="number"
-                              value={customDaysValue}
-                              onChange={(e) => setCustomDaysValue(e.target.value)}
-                              className="w-16 px-2 py-1 rounded-lg border border-slate-300 text-xs"
-                              placeholder="أيام"
-                            />
-                            <button
-                              onClick={() => {
-                                handleGrantPermission(user.id, parseInt(customDaysValue) || 30);
-                                setCustomDaysTargetId(null);
-                              }}
-                              className="px-2 py-1 rounded-lg bg-indigo-600 text-white text-xs font-bold"
-                            >
-                              تطبيق
-                            </button>
-                            <button
-                              onClick={() => setCustomDaysTargetId(null)}
-                              className="px-1.5 py-1 text-slate-400 text-xs"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => {
-                              setCustomDaysTargetId(user.id);
-                              setCustomDaysValue('60');
-                            }}
-                            className="px-2.5 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-medium border border-slate-200 transition cursor-pointer"
-                          >
-                            تحديد أيام...
-                          </button>
-                        )}
-
-                        {/* Reset Trial (5 mins) */}
-                        <button
-                          onClick={() => handleResetTrial(user.id)}
-                          className="p-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 transition cursor-pointer"
-                          title="إعادة 5 دقائق تجربة مجانية"
-                        >
-                          <RotateCcw className="w-4 h-4" />
-                        </button>
-
-                        {/* Revoke / Expire */}
-                        {!isOwner && (
-                          <button
-                            onClick={() => handleRevoke(user.id)}
-                            className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 transition cursor-pointer"
-                            title="إيقاف الصلاحية وقفل التطبيق عليه"
-                          >
-                            <Ban className="w-4 h-4" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Tab 2: License Keys Generator */}
-        {activeTab === 'licenses' && (
-          <div className="p-5 overflow-y-auto space-y-5 grow">
-            
-            {/* Key Generator Card */}
-            <div className="p-4 rounded-2xl bg-indigo-50/70 border border-indigo-200 space-y-3">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-indigo-600" />
-                <h3 className="text-xs font-black text-indigo-950">
-                  {isArabic ? 'توليد كود تفعيل فوري لإرساله للمشترك عبر الواتساب:' : 'Generate Instant License Key:'}
-                </h3>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">نوع الكود:</label>
-                  <select
-                    value={newLicensePlan}
-                    onChange={(e) => setNewLicensePlan(e.target.value as any)}
-                    className="px-3 py-2 rounded-xl border border-slate-300 bg-white text-xs font-bold"
-                  >
-                    <option value="monthly">شهر كامل (100 جنيه مصري)</option>
-                    <option value="custom">فترة مخصصة بالأيام</option>
-                    <option value="lifetime">وصول دائم غير محدود (مدى الحياة)</option>
-                  </select>
-                </div>
-
-                {newLicensePlan === 'custom' && (
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">عدد الأيام:</label>
+            {/* Tab 1: Users & Permissions */}
+            {activeTab === 'users' && (
+              <div className="p-5 overflow-y-auto space-y-4 grow">
+                
+                {/* Action Bar: Search & Add User */}
+                <div className="flex flex-col sm:flex-row gap-2 justify-between items-stretch sm:items-center">
+                  <div className="relative grow max-w-md">
+                    <Search className="w-4 h-4 text-slate-400 absolute right-3 top-3" />
                     <input
-                      type="number"
-                      value={newLicenseDays}
-                      onChange={(e) => setNewLicenseDays(e.target.value)}
-                      placeholder="30"
-                      className="w-24 px-3 py-2 rounded-xl border border-slate-300 bg-white text-xs"
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder={isArabic ? 'ابحث بالبريد الإلكتروني أو الاسم...' : 'Search by email or name...'}
+                      className="w-full pr-9 pl-3 py-2 rounded-xl border border-slate-200 text-xs focus:border-indigo-500 focus:ring-1 focus:ring-indigo-100 outline-hidden"
                     />
                   </div>
-                )}
 
-                <div className="self-end">
                   <button
-                    onClick={handleCreateLicense}
-                    className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center gap-2 shadow-sm transition cursor-pointer"
+                    onClick={() => setShowAddUser(!showAddUser)}
+                    className="flex items-center justify-center gap-2 px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs transition shadow-xs cursor-pointer"
                   >
                     <PlusCircle className="w-4 h-4" />
-                    <span>{isArabic ? 'توليد الكود الآن' : 'Generate Key'}</span>
+                    <span>{isArabic ? 'إضافة وتفعيل مشترك جديد' : 'Add & Activate User'}</span>
                   </button>
                 </div>
-              </div>
-            </div>
 
-            {/* List of Keys */}
-            <div className="space-y-3">
-              {/* Optional Phone Number to send directly to subscriber's chat */}
-              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
-                <div className="text-xs">
-                  <span className="font-bold text-slate-800 block">إرسال كود مباشر لرقم هاتف المشترك:</span>
-                  <span className="text-[11px] text-slate-500">اكتب رقم هاتف العميل ليتم فتح محادثته الشخصية مباشرة مجهزة بالكود:</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="tel"
-                    value={targetPhone}
-                    onChange={(e) => setTargetPhone(e.target.value)}
-                    placeholder="مثال: 01012345678"
-                    className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs text-slate-800 w-44"
-                  />
-                  {targetPhone && (
-                    <button
-                      onClick={() => setTargetPhone('')}
-                      className="px-2 py-1 text-slate-400 hover:text-slate-600 text-xs"
-                    >
-                      مسح
-                    </button>
+                {/* Add User Form Drawer */}
+                {showAddUser && (
+                  <form onSubmit={handleAddManualUser} className="p-4 rounded-2xl bg-indigo-50/60 border border-indigo-200 space-y-3">
+                    <h4 className="text-xs font-bold text-indigo-900">
+                      {isArabic ? 'إضافة وتفعيل مشترك مباشرة قبل أو بعد تواصله:' : 'Add and Activate User Directly:'}
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">البريد الإلكتروني:</label>
+                        <input
+                          type="email"
+                          required
+                          value={newEmail}
+                          onChange={(e) => setNewEmail(e.target.value)}
+                          placeholder="client@gmail.com"
+                          className="w-full px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">اسم المشترك:</label>
+                        <input
+                          type="text"
+                          value={newName}
+                          onChange={(e) => setNewName(e.target.value)}
+                          placeholder="الاسم"
+                          className="w-full px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">البرمشن / الصلاحية:</label>
+                        <select
+                          value={newPermission}
+                          onChange={(e) => setNewPermission(e.target.value as any)}
+                          className="w-full px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-bold"
+                        >
+                          <option value="30">شهر كامل (100 جنيه)</option>
+                          <option value="90">3 أشهر (300 جنيه)</option>
+                          <option value="365">سنة كاملة (12 شهر)</option>
+                          <option value="lifetime">وصول دائم (مدى الحياة)</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setShowAddUser(false)}
+                        className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-xs font-medium text-slate-600 cursor-pointer"
+                      >
+                        إلغاء
+                      </button>
+                      <button
+                        type="submit"
+                        className="px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-xs cursor-pointer"
+                      >
+                        حفظ وتفعيل فوراً
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* Users List */}
+                <div className="space-y-3">
+                  {filteredUsers.length === 0 ? (
+                    <div className="text-center py-10 text-slate-400 text-xs">
+                      {isArabic ? 'لم يتم العثور على أي مستخدمين مسجلين بعد' : 'No users found'}
+                    </div>
+                  ) : (
+                    filteredUsers.map((user) => {
+                      const sub = user.subscription;
+                      const isOwner = user.email.toLowerCase() === OWNER_EMAIL.toLowerCase();
+
+                      return (
+                        <div 
+                          key={user.id} 
+                          className="p-4 rounded-2xl border border-slate-200 hover:border-indigo-300 bg-white shadow-xs transition flex flex-col md:flex-row md:items-center justify-between gap-4"
+                        >
+                          {/* User Info */}
+                          <div className="flex items-center gap-3">
+                            <img 
+                              src={user.avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.email}`} 
+                              alt={user.name} 
+                              className="w-10 h-10 rounded-full border border-slate-200 bg-slate-100"
+                            />
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-bold text-sm text-slate-900">
+                                  {isOwner ? (isArabic ? 'مدير ومصمم التطبيق' : 'App Designer & Owner') : user.name}
+                                </span>
+                                {isOwner && (
+                                  <span className="px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-black">
+                                    {isArabic ? 'المصمم والمدير' : 'Owner'}
+                                  </span>
+                                )}
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                  sub.status === 'lifetime' 
+                                    ? 'bg-purple-100 text-purple-700' 
+                                    : sub.status === 'active' 
+                                    ? 'bg-emerald-100 text-emerald-700' 
+                                    : sub.status === 'trial' 
+                                    ? 'bg-blue-100 text-blue-700' 
+                                    : 'bg-rose-100 text-rose-700'
+                                }`}>
+                                  {sub.status === 'lifetime' 
+                                    ? 'مدى الحياة' 
+                                    : sub.status === 'active' 
+                                    ? 'مشترك نشط' 
+                                    : sub.status === 'trial' 
+                                    ? `تجربة (${Math.floor(sub.trialSecondsRemaining / 60)}د)` 
+                                    : 'منتهي الصلاحية'}
+                                </span>
+                              </div>
+                              
+                              <p className="text-xs text-slate-500 font-mono">
+                                {isOwner ? (isArabic ? 'البريد الإلكتروني محمي ومخفي' : 'Email protected & hidden') : user.email}
+                              </p>
+                              
+                              {sub.expiresAt && (
+                                <p className="text-[11px] text-slate-400 mt-0.5">
+                                  ينتهي في: {new Date(sub.expiresAt).toLocaleDateString('ar-EG')}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Permissions Action Buttons */}
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            
+                            {/* Grant 1 Month (100 EGP) */}
+                            <button
+                              onClick={() => handleGrantPermission(user.id, 30)}
+                              className="px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-200 transition cursor-pointer"
+                              title="تفعيل شهر كامل مقابل 100 جنيه"
+                            >
+                              شهر (100 ج.م)
+                            </button>
+
+                            {/* Grant Lifetime Access */}
+                            <button
+                              onClick={() => handleGrantPermission(user.id, 'lifetime')}
+                              className="px-2.5 py-1.5 rounded-lg bg-purple-50 hover:bg-purple-100 text-purple-800 text-xs font-bold border border-purple-200 transition cursor-pointer"
+                              title="إتاحة وصول دائم مدى الحياة"
+                            >
+                              مدى الحياة
+                            </button>
+
+                            {/* Custom Days Input Toggle */}
+                            {customDaysTargetId === user.id ? (
+                              <div className="flex items-center gap-1">
+                                <input
+                                  type="number"
+                                  value={customDaysValue}
+                                  onChange={(e) => setCustomDaysValue(e.target.value)}
+                                  className="w-16 px-2 py-1 rounded-lg border border-slate-300 text-xs"
+                                  placeholder="أيام"
+                                />
+                                <button
+                                  onClick={() => {
+                                    handleGrantPermission(user.id, parseInt(customDaysValue) || 30);
+                                    setCustomDaysTargetId(null);
+                                  }}
+                                  className="px-2 py-1 rounded-lg bg-indigo-600 text-white text-xs font-bold cursor-pointer"
+                                >
+                                  تطبيق
+                                </button>
+                                <button
+                                  onClick={() => setCustomDaysTargetId(null)}
+                                  className="px-1.5 py-1 text-slate-400 text-xs cursor-pointer"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={() => {
+                                  setCustomDaysTargetId(user.id);
+                                  setCustomDaysValue('60');
+                                }}
+                                className="px-2.5 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-medium border border-slate-200 transition cursor-pointer"
+                              >
+                                تحديد أيام...
+                              </button>
+                            )}
+
+                            {/* Reset Trial (5 mins) */}
+                            <button
+                              onClick={() => handleResetTrial(user.id)}
+                              className="p-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 transition cursor-pointer"
+                              title="إعادة 5 دقائق تجربة مجانية"
+                            >
+                              <RotateCcw className="w-4 h-4" />
+                            </button>
+
+                            {/* Revoke / Expire */}
+                            {!isOwner && (
+                              <button
+                                onClick={() => handleRevoke(user.id)}
+                                className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 transition cursor-pointer"
+                                title="إيقاف الصلاحية وقفل التطبيق عليه"
+                              >
+                                <Ban className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
                   )}
                 </div>
               </div>
+            )}
 
-              <h4 className="text-xs font-bold text-slate-700">
-                {isArabic ? 'الأكواد المولدة المتاحة والمستخدمة:' : 'Generated License Keys:'}
-              </h4>
+            {/* Tab 2: License Keys Generator */}
+            {activeTab === 'licenses' && (
+              <div className="p-5 overflow-y-auto space-y-5 grow">
+                
+                {/* Key Generator Card */}
+                <div className="p-4 rounded-2xl bg-indigo-50/70 border border-indigo-200 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-indigo-600" />
+                    <h3 className="text-xs font-black text-indigo-950">
+                      {isArabic ? 'توليد كود تفعيل فوري لإرساله للمشترك عبر الواتساب:' : 'Generate Instant License Key:'}
+                    </h3>
+                  </div>
 
-              {allLicenses.map((key) => {
-                const cleanPhone = targetPhone.replace(/\D/g, '');
-                // Format egyptian phone if starts with 01
-                const formattedPhone = cleanPhone.startsWith('01') 
-                  ? `2${cleanPhone}` 
-                  : cleanPhone.startsWith('20') 
-                  ? cleanPhone 
-                  : cleanPhone;
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">نوع الكود:</label>
+                      <select
+                        value={newLicensePlan}
+                        onChange={(e) => setNewLicensePlan(e.target.value as any)}
+                        className="px-3 py-2 rounded-xl border border-slate-300 bg-white text-xs font-bold"
+                      >
+                        <option value="monthly">شهر كامل (100 جنيه مصري)</option>
+                        <option value="custom">فترة مخصصة بالأيام</option>
+                        <option value="lifetime">وصول دائم غير محدود (مدى الحياة)</option>
+                      </select>
+                    </div>
 
-                const whatsappMsg = `السلام عليكم ورحمة الله،
+                    {newLicensePlan === 'custom' && (
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-700 mb-1">عدد الأيام:</label>
+                        <input
+                          type="number"
+                          value={newLicenseDays}
+                          onChange={(e) => setNewLicenseDays(e.target.value)}
+                          placeholder="30"
+                          className="w-24 px-3 py-2 rounded-xl border border-slate-300 bg-white text-xs"
+                        />
+                      </div>
+                    )}
+
+                    <div className="self-end">
+                      <button
+                        onClick={handleCreateLicense}
+                        className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs flex items-center gap-2 shadow-xs transition cursor-pointer"
+                      >
+                        <PlusCircle className="w-4 h-4" />
+                        <span>{isArabic ? 'توليد الكود الآن' : 'Generate Key'}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* List of Keys */}
+                <div className="space-y-3">
+                  {/* Optional Phone Number to send directly to subscriber's chat */}
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+                    <div className="text-xs">
+                      <span className="font-bold text-slate-800 block">إرسال كود مباشر لرقم هاتف المشترك:</span>
+                      <span className="text-[11px] text-slate-500">اكتب رقم هاتف العميل ليتم فتح محادثته الشخصية مباشرة مجهزة بالكود:</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="tel"
+                        value={targetPhone}
+                        onChange={(e) => setTargetPhone(e.target.value)}
+                        placeholder="مثال: 01012345678"
+                        className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs text-slate-800 w-44"
+                      />
+                      {targetPhone && (
+                        <button
+                          onClick={() => setTargetPhone('')}
+                          className="px-2 py-1 text-slate-400 hover:text-slate-600 text-xs cursor-pointer"
+                        >
+                          مسح
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <h4 className="text-xs font-bold text-slate-700">
+                    {isArabic ? 'الأكواد المولدة المتاحة والمستخدمة:' : 'Generated License Keys:'}
+                  </h4>
+
+                  {allLicenses.map((key) => {
+                    const cleanPhone = targetPhone.replace(/\D/g, '');
+                    const formattedPhone = cleanPhone.startsWith('01') 
+                      ? `2${cleanPhone}` 
+                      : cleanPhone.startsWith('20') 
+                      ? cleanPhone 
+                      : cleanPhone;
+
+                    const whatsappMsg = `السلام عليكم ورحمة الله،
 أهلاً بك في تطبيق LinguaReader Pro لتعلم اللغات بالقراءة والذكاء الاصطناعي.
 
 كود تفعيل اشتراكك الخاص هو:
@@ -675,148 +701,222 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
 
 مع تحيات مصمم ومدير التطبيق (م. محمد - ${OWNER_PHONE}).`;
 
-                const directSendUrl = formattedPhone 
-                  ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(whatsappMsg)}`
-                  : `https://wa.me/?text=${encodeURIComponent(whatsappMsg)}`;
+                    const directSendUrl = formattedPhone 
+                      ? `https://wa.me/${formattedPhone}?text=${encodeURIComponent(whatsappMsg)}`
+                      : `https://wa.me/?text=${encodeURIComponent(whatsappMsg)}`;
 
-                return (
-                  <div 
-                    key={key.code}
-                    className="p-3.5 rounded-xl border border-slate-200 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs hover:border-indigo-300 transition"
-                  >
+                    return (
+                      <div 
+                        key={key.code}
+                        className="p-3.5 rounded-xl border border-slate-200 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs hover:border-indigo-300 transition"
+                      >
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-black text-sm tracking-wider text-indigo-950 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100">
+                              {key.code}
+                            </span>
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                              key.isUsed ? 'bg-slate-100 text-slate-500' : 'bg-emerald-100 text-emerald-700'
+                            }`}>
+                              {key.isUsed ? `مستخدم بواسطة ${key.usedByEmail || 'مستخدم'}` : 'جاهز للاستخدام'}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500 mt-1">
+                            {key.plan === 'lifetime' ? 'وصول دائم مدى الحياة' : `اشتراك لمدة ${key.durationDays || 30} يوماً (100 جنيه)`}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handleCopy(key.code)}
+                            className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+                            title="نسخ الكود فقط للحافظة"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>{copiedCode === key.code ? 'تم النسخ!' : 'نسخ الكود'}</span>
+                          </button>
+
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(whatsappMsg);
+                              setNotice({ text: 'تم نسخ رسالة الواتساب الكاملة مع الكود بنجاح! يمكنك لصقها الآن في محادثة العميل.', type: 'success' });
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+                            title="نسخ رسالة الواتساب الجاهزة بالكامل"
+                          >
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>نسخ الرسالة</span>
+                          </button>
+
+                          <a
+                            href={directSendUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-xs"
+                          >
+                            <MessageCircle className="w-3.5 h-3.5" />
+                            <span>{targetPhone ? `إرسال للرقم (${targetPhone})` : 'إرسال بالواتساب'}</span>
+                          </a>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Tab 3: Firebase Cloud Sync Info & Code Configuration */}
+            {activeTab === 'firebase' && (
+              <div className="p-5 overflow-y-auto space-y-5 grow text-slate-800 text-xs">
+                
+                {/* Status Box */}
+                <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-50 to-indigo-50 border border-emerald-200 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center">
+                      <Database className="w-5 h-5" />
+                    </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="font-mono font-black text-sm tracking-wider text-indigo-950 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100">
-                          {key.code}
-                        </span>
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          key.isUsed ? 'bg-slate-100 text-slate-500' : 'bg-emerald-100 text-emerald-700'
-                        }`}>
-                          {key.isUsed ? `مستخدم بواسطة ${key.usedByEmail || 'مستخدم'}` : 'جاهز للاستخدام'}
+                        <h3 className="text-sm font-black text-slate-900">حالة الربط بالسحابة (Firebase)</h3>
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-extrabold">
+                          مشروع: {firebaseConfig.projectId}
                         </span>
                       </div>
-                      <p className="text-[11px] text-slate-500 mt-1">
-                        {key.plan === 'lifetime' ? 'وصول دائم مدى الحياة' : `اشتراك لمدة ${key.durationDays || 30} يوماً (100 جنيه)`}
+                      <p className="text-[11px] text-slate-600 mt-0.5">
+                        تم تفعيل المزامنة المباشرة لقاعدة البيانات (Firestore + Realtime Database) وحسابات Google الحقيقية.
                       </p>
                     </div>
-
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => handleCopy(key.code)}
-                        className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
-                        title="نسخ الكود فقط للحافظة"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                        <span>{copiedCode === key.code ? 'تم النسخ!' : 'نسخ الكود'}</span>
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          navigator.clipboard.writeText(whatsappMsg);
-                          setNotice({ text: 'تم نسخ رسالة الواتساب الكاملة مع الكود بنجاح! يمكنك لصقها الآن في محادثة العميل.', type: 'success' });
-                        }}
-                        className="px-2.5 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
-                        title="نسخ رسالة الواتساب الجاهزة بالكامل"
-                      >
-                        <Sparkles className="w-3.5 h-3.5" />
-                        <span>نسخ الرسالة</span>
-                      </button>
-
-                      <a
-                        href={directSendUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-xs"
-                      >
-                        <MessageCircle className="w-3.5 h-3.5" />
-                        <span>{targetPhone ? `إرسال للرقم (${targetPhone})` : 'إرسال بالواتساب'}</span>
-                      </a>
-                    </div>
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Tab 3: Detailed Step-by-Step Guide for Admin */}
-        {activeTab === 'guide' && (
-          <div className="p-6 overflow-y-auto space-y-6 grow text-slate-800 text-xs">
-            
-            {/* Intro banner */}
-            <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/10 via-indigo-50 to-emerald-50 border border-amber-300/40 space-y-2">
-              <div className="flex items-center gap-2">
-                <Crown className="w-5 h-5 text-amber-600" />
-                <h3 className="text-sm font-black text-slate-900">
-                  دليل مدير ومصمم التطبيق: كيف تستلم الـ 100 جنيه وتفعل الحساب للعميل؟
-                </h3>
-              </div>
-              <p className="text-[11px] text-slate-600 leading-relaxed">
-                عندما تنتهي الـ 5 دقائق المجانية عند أي مستخدم، يظهر له زر أخضر كبير يفتتح محادثة واتساب معك على رقمك 
-                <strong className="text-slate-900 mx-1">01120194940</strong> 
-                ويرسل لك رسالة جاهزة فيها إيميله ومكتوب فيها (الاشتراك الشهري 100 جنيه). 
-                أمامك خياران في غاية السهولة للتفعيل:
-              </p>
-            </div>
-
-            {/* Method 1 */}
-            <div className="p-4 rounded-2xl border-2 border-emerald-200 bg-emerald-50/40 space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="w-6 h-6 rounded-full bg-emerald-600 text-white font-black text-xs flex items-center justify-center">
-                    1
-                  </span>
-                  <h4 className="text-xs sm:text-sm font-black text-emerald-950">
-                    الطريقة الأولى (الأسرع والأسهل على الإطلاق - بدون أكواد):
-                  </h4>
                 </div>
-                <span className="px-2 py-0.5 rounded-full bg-emerald-200 text-emerald-900 text-[10px] font-bold">
-                  موصى بها
-                </span>
-              </div>
 
-              <div className="space-y-2 text-[11px] text-emerald-900 leading-relaxed pr-2">
-                <p>1. العميل يرسل لك رسالة على الواتساب فيها إيميله (مثل: <code className="bg-white px-1 py-0.5 rounded border border-emerald-300 font-bold">ahmed@gmail.com</code>) ويحول لك الـ 100 جنيه (فودافون كاش أو إنستاباي).</p>
-                <p>2. افتح التطبيق بحسابك، واضغط من الشريط العلوي على <strong>«لوحة التحكم والصلاحيات»</strong>.</p>
-                <p>3. في تبويب <strong>«إدارة المشتركين»</strong>، ابحث عن إيميله، واضغط على الزر الأخضر: <span className="bg-emerald-600 text-white px-2 py-0.5 rounded font-bold">شهر (100 ج.م)</span> أو <span className="bg-purple-600 text-white px-2 py-0.5 rounded font-bold">مدى الحياة</span>.</p>
-                <p className="font-bold text-emerald-800">✅ بمجرد الضغط، يتفعل حسابه فوراً دون أن يحتاج هو لإدخال أي كود!</p>
-              </div>
-            </div>
+                {/* Where to find and put the code */}
+                <div className="p-4 rounded-2xl bg-white border border-slate-200 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 font-bold text-slate-900 text-xs">
+                      <FileCode2 className="w-4 h-4 text-indigo-600" />
+                      <span>مكان كود الربط بالفيربيس في المشروع:</span>
+                    </div>
+                    <span className="text-[11px] text-indigo-600 font-mono font-bold bg-indigo-50 px-2 py-1 rounded-md">
+                      /src/services/firebase.ts
+                    </span>
+                  </div>
 
-            {/* Method 2 */}
-            <div className="p-4 rounded-2xl border-2 border-indigo-200 bg-indigo-50/40 space-y-3">
-              <div className="flex items-center gap-2">
-                <span className="w-6 h-6 rounded-full bg-indigo-600 text-white font-black text-xs flex items-center justify-center">
-                  2
-                </span>
-                <h4 className="text-xs sm:text-sm font-black text-indigo-950">
-                  الطريقة الثانية (إرسال كود تفعيل للمشترك عبر الواتساب):
-                </h4>
-              </div>
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    تم وضع كود الربط الخاص بك في الملف الموضح أعلاه. إذا أردت نسخه أو نقله في أي وقت، إليك الكود الكامل المدمج في تطبيقك:
+                  </p>
 
-              <div className="space-y-2 text-[11px] text-indigo-900 leading-relaxed pr-2">
-                <p>1. افتح تبويب <strong>«أكواد التفعيل»</strong> في هذه اللوحة.</p>
-                <p>2. اضغط على زر <strong>«توليد الكود الآن»</strong> (سيقوم النظام بعمل كود مثل <code className="bg-white px-1.5 py-0.5 rounded border border-indigo-300 font-mono font-bold">READ-30D-XXXX</code>).</p>
-                <p>3. اضغط على زر <strong>«إرسال بالواتساب»</strong> أو <strong>«نسخ الرسالة»</strong> وابعته للعميل في شات الواتساب.</p>
-                <p>4. العميل يضع الكود في خانة كود التفعيل في شاشة القفل ويضغط <strong>«تفعيل الحساب»</strong>، فيفتح التطبيق له فوراً لمدة شهر كامل.</p>
-              </div>
-            </div>
+                  <div className="relative">
+                    <pre className="p-3.5 rounded-xl bg-slate-900 text-emerald-400 font-mono text-[11px] overflow-x-auto leading-relaxed border border-slate-800">
+                      {firebaseConfigSnippet}
+                    </pre>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(firebaseConfigSnippet);
+                        setCopiedFirebaseSnippet(true);
+                        setTimeout(() => setCopiedFirebaseSnippet(false), 2000);
+                      }}
+                      className="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[10px] font-bold flex items-center gap-1 transition cursor-pointer"
+                    >
+                      {copiedFirebaseSnippet ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                      <span>{copiedFirebaseSnippet ? 'تم النسخ' : 'نسخ الكود'}</span>
+                    </button>
+                  </div>
+                </div>
 
-            {/* Secret Master Code */}
-            <div className="p-4 rounded-2xl border border-amber-300 bg-amber-50/60 space-y-2">
-              <div className="flex items-center gap-2">
-                <KeyRound className="w-4 h-4 text-amber-600" />
-                <h4 className="text-xs font-bold text-amber-950">
-                  كود الماستر السحري الدائم (خاص بك):
-                </h4>
+                {/* Live users preview in cloud */}
+                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-800 text-xs">المستخدمون المتصلون سحابياً:</span>
+                    <span className="text-[10px] text-emerald-700 font-bold bg-emerald-100 px-2 py-0.5 rounded-full flex items-center gap-1">
+                      <RefreshCw className="w-3 h-3 animate-spin" />
+                      مزامنة لحظية مباشرة
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    كل مستخدم يسجل دخوله بحساب Google يظهر هنا تلقائياً في قائمة المشتركين ويمكنك تفعيله بضغطة زر واحدة (شهر 100 جنيه أو مدى الحياة)، وسيتفعل تطبيقه فوراً دون أي تدخل منه!
+                  </p>
+                </div>
               </div>
-              <p className="text-[11px] text-amber-900 leading-relaxed">
-                رقم هاتفك نفسه <strong className="text-slate-900 bg-white px-1.5 py-0.5 rounded border border-amber-300 font-mono">01120194940</strong> أو الكود <strong className="text-slate-900 bg-white px-1.5 py-0.5 rounded border border-amber-300 font-mono">VIP2026</strong> يعملان ككود ماستر دائم يمنح وصولاً مفتوحاً مدى الحياة لأي شخص تكتبه له!
-              </p>
-            </div>
+            )}
 
-          </div>
-        )}
+            {/* Tab 4: Detailed Step-by-Step Guide for Admin */}
+            {activeTab === 'guide' && (
+              <div className="p-6 overflow-y-auto space-y-6 grow text-slate-800 text-xs">
+                
+                {/* Intro banner */}
+                <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500/10 via-indigo-50 to-emerald-50 border border-amber-300/40 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Crown className="w-5 h-5 text-amber-600" />
+                    <h3 className="text-sm font-black text-slate-900">
+                      دليل مدير ومصمم التطبيق: كيف تستلم الـ 100 جنيه وتفعل الحساب للعميل؟
+                    </h3>
+                  </div>
+                  <p className="text-[11px] text-slate-600 leading-relaxed">
+                    عندما تنتهي الـ 5 دقائق المجانية عند أي مستخدم، يظهر له زر أخضر كبير يفتتح محادثة واتساب معك على رقمك 
+                    <strong className="text-slate-900 mx-1">01120194940</strong> 
+                    ويرسل لك رسالة جاهزة فيها إيميله ومكتوب فيها (الاشتراك الشهري 100 جنيه). 
+                    أمامك خياران في غاية السهولة للتفعيل:
+                  </p>
+                </div>
+
+                {/* Method 1 */}
+                <div className="p-4 rounded-2xl border-2 border-emerald-200 bg-emerald-50/40 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="w-6 h-6 rounded-full bg-emerald-600 text-white font-black text-xs flex items-center justify-center">
+                        1
+                      </span>
+                      <h4 className="text-xs sm:text-sm font-black text-emerald-950">
+                        الطريقة الأولى (الأسرع والأسهل على الإطلاق - بدون أكواد):
+                      </h4>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-200 text-emerald-900 text-[10px] font-bold">
+                      موصى بها
+                    </span>
+                  </div>
+
+                  <div className="space-y-2 text-[11px] text-emerald-900 leading-relaxed pr-2">
+                    <p>1. العميل يرسل لك رسالة على الواتساب فيها إيميله (مثل: <code className="bg-white px-1 py-0.5 rounded border border-emerald-300 font-bold">ahmed@gmail.com</code>) ويحول لك الـ 100 جنيه (فودافون كاش أو إنستاباي).</p>
+                    <p>2. افتح التطبيق بحسابك، واضغط من الشريط العلوي على <strong>«لوحة التحكم والصلاحيات»</strong>.</p>
+                    <p>3. في تبويب <strong>«المشتركون المسجلون»</strong>، ابحث عن إيميله، واضغط على الزر الأخضر: <span className="bg-emerald-600 text-white px-2 py-0.5 rounded font-bold">شهر (100 ج.م)</span> أو <span className="bg-purple-600 text-white px-2 py-0.5 rounded font-bold">مدى الحياة</span>.</p>
+                    <p className="font-bold text-emerald-800">✅ بمجرد الضغط، يتفعل حسابه فوراً دون أن يحتاج هو لإدخال أي كود!</p>
+                  </div>
+                </div>
+
+                {/* Method 2 */}
+                <div className="p-4 rounded-2xl border-2 border-indigo-200 bg-indigo-50/40 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="w-6 h-6 rounded-full bg-indigo-600 text-white font-black text-xs flex items-center justify-center">
+                      2
+                    </span>
+                    <h4 className="text-xs sm:text-sm font-black text-indigo-950">
+                      الطريقة الثانية (إرسال كود تفعيل للمشترك عبر الواتساب):
+                    </h4>
+                  </div>
+
+                  <div className="space-y-2 text-[11px] text-indigo-900 leading-relaxed pr-2">
+                    <p>1. افتح تبويب <strong>«أكواد التفعيل»</strong> في هذه اللوحة.</p>
+                    <p>2. اضغط على زر <strong>«توليد الكود الآن»</strong> (سيقوم النظام بعمل كود مثل <code className="bg-white px-1.5 py-0.5 rounded border border-indigo-300 font-mono font-bold">READ-30D-XXXX</code>).</p>
+                    <p>3. اضغط على زر <strong>«إرسال بالواتساب»</strong> أو <strong>«نسخ الرسالة»</strong> وابعته للعميل في شات الواتساب.</p>
+                    <p>4. العميل يضع الكود في خانة كود التفعيل في شاشة القفل ويضغط <strong>«تفعيل الحساب»</strong>، فيفتح التطبيق له فوراً لمدة شهر كامل.</p>
+                  </div>
+                </div>
+
+                {/* Secret Master Code */}
+                <div className="p-4 rounded-2xl border border-amber-300 bg-amber-50/60 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <KeyRound className="w-4 h-4 text-amber-600" />
+                    <h4 className="text-xs font-bold text-amber-950">
+                      كلمة مرور المدير وكود الماستر السحري (خاص بك):
+                    </h4>
+                  </div>
+                  <p className="text-[11px] text-amber-900 leading-relaxed">
+                    كلمة المرور السرية <strong className="text-slate-900 bg-white px-1.5 py-0.5 rounded border border-amber-300 font-mono">4704600vdlhs@</strong> أو رقم هاتفك <strong className="text-slate-900 bg-white px-1.5 py-0.5 rounded border border-amber-300 font-mono">01120194940</strong> أو الكود <strong className="text-slate-900 bg-white px-1.5 py-0.5 rounded border border-amber-300 font-mono">VIP2026</strong> يفتحون التطبيق ويمنحون وصولاً مفتوحاً دائماً بنقرة واحدة!
+                  </p>
+                </div>
+
+              </div>
+            )}
           </>
         )}
       </div>

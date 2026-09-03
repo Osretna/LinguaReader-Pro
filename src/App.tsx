@@ -16,6 +16,7 @@ import { TrialBanner } from './components/TrialBanner';
 import { ContentItem, ReaderSettings, UserStats, CEFRLevel, AuthUser } from './types';
 import { StorageService, DEFAULT_SETTINGS, DEFAULT_STATS } from './services/storage';
 import { AuthService, OWNER_EMAIL } from './services/auth';
+import { FirebaseService } from './services/firebase';
 import { INITIAL_CONTENT_ITEMS } from './data/mockContent';
 
 export default function App() {
@@ -26,8 +27,9 @@ export default function App() {
 
   // Authentication & Subscription State
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => AuthService.getCurrentUser());
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(() => !AuthService.getCurrentUser());
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
+  const [isForceUnlocked, setIsForceUnlocked] = useState(false);
 
   // Other Modals
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -44,23 +46,44 @@ export default function App() {
     setSettings(loadedSettings);
     setStats(loadedStats);
 
-    // If no user is logged in yet, check current user or prompt sign-in
+    // If no user is logged in yet, show the Google sign-in modal with app visible in background
     const active = AuthService.getCurrentUser();
     if (!active) {
-      // Auto open Google sign-in modal if first visit so they can start their 5-min trial
-      const hasSeenAuth = localStorage.getItem('lingua_seen_auth_prompt');
-      if (!hasSeenAuth) {
-        setIsAuthModalOpen(true);
-        localStorage.setItem('lingua_seen_auth_prompt', 'true');
-      }
+      setIsAuthModalOpen(true);
     } else {
       setCurrentUser(active);
     }
   }, []);
 
+  // Real-time Cloud Sync Listener for current user
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    
+    // Listen for remote activation by admin
+    const unsub = FirebaseService.listenToMyUser(currentUser.id, (updatedUser) => {
+      if (updatedUser) {
+        // If user was activated remotely by admin, update locally and unlock immediately
+        if (
+          updatedUser.subscription.status === 'active' || 
+          updatedUser.subscription.status === 'lifetime' || 
+          updatedUser.role === 'admin'
+        ) {
+          AuthService.unlockDevice();
+          setIsForceUnlocked(true);
+        }
+        AuthService.saveUser(updatedUser);
+        setCurrentUser(updatedUser);
+      }
+    });
+
+    return () => {
+      unsub?.();
+    };
+  }, [currentUser?.id]);
+
   // 5-Minute Trial Timer Interval
   useEffect(() => {
-    if (currentUser?.role === 'admin' || currentUser?.email.toLowerCase() === OWNER_EMAIL.toLowerCase()) return;
+    if (currentUser?.role === 'admin' || currentUser?.email?.toLowerCase() === OWNER_EMAIL.toLowerCase()) return;
     if (currentUser && currentUser.subscription.status !== 'trial') return;
 
     const timer = setInterval(() => {
@@ -80,7 +103,7 @@ export default function App() {
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [currentUser?.subscription.status, currentUser?.subscription.isExpired, currentUser?.role]);
+  }, [currentUser?.subscription?.status, currentUser?.subscription?.isExpired, currentUser?.role]);
 
   const handleUpdateSettings = (newPartial: Partial<ReaderSettings>) => {
     const updated = StorageService.saveSettings(newPartial);
@@ -92,8 +115,6 @@ export default function App() {
     setActiveTab('reader');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
-
-  const [isForceUnlocked, setIsForceUnlocked] = useState(false);
 
   const refreshStats = () => {
     setStats(StorageService.getUserStats());
@@ -107,12 +128,14 @@ export default function App() {
   const handleUnlockSuccess = () => {
     AuthService.unlockDevice();
     setIsForceUnlocked(true);
+    setIsAuthModalOpen(false);
     refreshUser();
     refreshStats();
   };
 
   const handleSignOut = () => {
     AuthService.signOut();
+    FirebaseService.signOutReal().catch(() => {});
     setCurrentUser(null);
     setIsForceUnlocked(false);
   };
@@ -121,7 +144,7 @@ export default function App() {
   const hasActiveAccess = Boolean(
     currentUser && (
       currentUser.role === 'admin' ||
-      currentUser.email.toLowerCase() === OWNER_EMAIL.toLowerCase() ||
+      currentUser.email?.toLowerCase() === OWNER_EMAIL.toLowerCase() ||
       currentUser.subscription.status === 'lifetime' ||
       (currentUser.subscription.status === 'active' && !currentUser.subscription.isExpired)
     )
@@ -133,7 +156,7 @@ export default function App() {
     currentUser && (currentUser.subscription.isExpired || currentUser.subscription.status === 'expired')
   );
 
-  // The lock screen persists across refreshes and restarts, but disappears immediately when unlocked
+  // The lock screen disappears immediately when unlocked
   const isLocked = !isForceUnlocked && !hasActiveAccess && !isDevicePermanentlyUnlocked && (isDeviceTrialLocked || isUserExpired);
 
   return (
@@ -258,12 +281,16 @@ export default function App() {
         </div>
       </footer>
 
-      {/* Google Sign-in Modal */}
+      {/* Google / Real Email Sign-in Modal */}
       <GoogleAuthModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
         onSuccess={(user) => {
           setCurrentUser(user);
+          if (user.subscription.status === 'lifetime' || user.subscription.status === 'active' || user.role === 'admin') {
+            setIsForceUnlocked(true);
+            AuthService.unlockDevice();
+          }
           refreshStats();
         }}
         isArabic={isArabic}
@@ -332,4 +359,3 @@ export default function App() {
     </div>
   );
 }
-

@@ -797,6 +797,10 @@ function mapPartOfSpeechToArabic(pos: string): string {
   return `${pos}`;
 }
 
+export function cleanWordString(word: string): string {
+  return word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '').toLowerCase().trim();
+}
+
 function estimateCEFR(word: string): CEFRLevel {
   const len = word.length;
   if (len <= 4) return 'A1';

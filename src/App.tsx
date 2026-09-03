@@ -248,6 +248,11 @@ export default function App() {
     FirebaseService.signOutReal().catch(() => {});
     setCurrentUser(null);
     setIsForceUnlocked(false);
+    setIsAdminModalOpen(false);
+    setIsSettingsOpen(false);
+    setIsGuideOpen(false);
+    setIsTWAGuideOpen(false);
+    setIsAuthModalOpen(true);
   };
 
   const handleAdminSuccess = (adminUser: AuthUser) => {
@@ -258,11 +263,17 @@ export default function App() {
     refreshStats();
   };
 
-  // Check if current user is admin or has active paid/lifetime subscription
-  const hasActiveAccess = Boolean(
+  // Check if current user is admin
+  const isAdmin = Boolean(
     currentUser && (
       currentUser.role === 'admin' ||
-      currentUser.email?.toLowerCase() === OWNER_EMAIL.toLowerCase() ||
+      currentUser.email?.toLowerCase() === OWNER_EMAIL.toLowerCase()
+    )
+  );
+
+  // Active paid or lifetime subscription
+  const hasPaidAccess = Boolean(
+    currentUser && (
       currentUser.subscription?.status === 'lifetime' ||
       (currentUser.subscription?.status === 'active' && !currentUser.subscription?.isExpired)
     )
@@ -275,13 +286,17 @@ export default function App() {
   );
   const isLicenseExpired = Boolean(licenseConfig.expiresAt && licenseConfig.expiresAt <= nowTimestamp);
 
-  // The lock screen disappears immediately when unlocked
-  const isLocked = !isForceUnlocked && !hasActiveAccess && (
-    globalAppState.isAppLocked ||
-    licenseConfig.isManuallyStopped ||
-    (isLicenseExpired && !isDevicePermanentlyUnlocked) ||
-    isUserExpired ||
-    (!isDevicePermanentlyUnlocked && isDeviceTrialLocked)
+  // If app is stopped or globally locked by Admin, all non-admins are locked out!
+  const isAppKilled = Boolean(globalAppState.isAppLocked || licenseConfig.isManuallyStopped);
+
+  // The lock screen appears if the app is killed, or if trial/subscription is expired
+  const isLocked = !isAdmin && (
+    isAppKilled ||
+    (!isForceUnlocked && !hasPaidAccess && (
+      (isLicenseExpired && !isDevicePermanentlyUnlocked) ||
+      isUserExpired ||
+      (!isDevicePermanentlyUnlocked && isDeviceTrialLocked)
+    ))
   );
 
   return (
@@ -406,17 +421,25 @@ export default function App() {
         </div>
       </footer>
 
-      {/* Google / Real Email Sign-in Modal */}
+      {/* Google / Real Email Sign-in Modal - Mandatory when not signed in, cannot be closed or bypassed */}
       <GoogleAuthModal
-        isOpen={isAuthModalOpen}
-        onClose={() => setIsAuthModalOpen(false)}
+        isOpen={!currentUser || isAuthModalOpen}
+        canClose={Boolean(currentUser)}
+        onClose={() => {
+          if (currentUser) {
+            setIsAuthModalOpen(false);
+          }
+        }}
         onSuccess={(rawUser) => {
           const user = AuthService.normalizeUser(rawUser);
           setCurrentUser(user);
+          setIsAuthModalOpen(false);
           FirebaseService.syncUserToCloud(user).catch(() => {});
           if (user.subscription.status === 'lifetime' || user.subscription.status === 'active' || user.role === 'admin') {
             setIsForceUnlocked(true);
             AuthService.unlockDevice();
+          } else {
+            setIsForceUnlocked(false);
           }
           if (user.role === 'admin' || user.email?.toLowerCase() === OWNER_EMAIL.toLowerCase()) {
             AuthService.setAdminSessionAuthenticated();

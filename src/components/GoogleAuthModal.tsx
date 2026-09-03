@@ -10,6 +10,7 @@ interface GoogleAuthModalProps {
   onClose: () => void;
   onSuccess: (user: AuthUser) => void;
   isArabic: boolean;
+  canClose?: boolean;
 }
 
 export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
@@ -17,6 +18,7 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
   onClose,
   onSuccess,
   isArabic,
+  canClose = false,
 }) => {
   const [authMode, setAuthMode] = useState<'google' | 'email-login' | 'email-register'>('google');
   const [email, setEmail] = useState('');
@@ -152,22 +154,42 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
     onClose();
   };
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && canClose) {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [canClose, onClose]);
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/65 backdrop-blur-xs animate-fadeIn">
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fadeIn select-none"
+      onClick={(e) => {
+        if (canClose && e.target === e.currentTarget) {
+          onClose();
+        }
+      }}
+    >
       <div 
         id="google-auth-modal"
         className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-100 overflow-hidden ring-1 ring-black/5"
         dir={isArabic ? 'rtl' : 'ltr'}
+        onClick={(e) => e.stopPropagation()}
       >
         {/* Header with gradient */}
         <div className="p-6 bg-gradient-to-br from-indigo-900 via-indigo-800 to-purple-900 text-white relative">
-          <button
-            onClick={onClose}
-            className="absolute top-4 left-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition cursor-pointer"
-            aria-label="إغلاق"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          {canClose && (
+            <button
+              onClick={onClose}
+              className="absolute top-4 left-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition cursor-pointer"
+              aria-label="إغلاق"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          )}
 
           <div className="flex items-center gap-3 mb-2">
             <div className="w-10 h-10 rounded-2xl bg-white flex items-center justify-center shadow-md shadow-indigo-950/30">

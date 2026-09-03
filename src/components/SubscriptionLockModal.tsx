@@ -127,6 +127,16 @@ export const SubscriptionLockModal: React.FC<SubscriptionLockModalProps> = ({
                 : '« To continue using the application, please contact the developer via WhatsApp »'}
             </p>
           </div>
+
+          {/* Real-time sync status badge */}
+          <div className="mt-3 flex items-center justify-center gap-2 px-3 py-1.5 rounded-xl bg-emerald-500/20 border border-emerald-400/30 text-emerald-200 text-xs font-semibold">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping shrink-0" />
+            <span>
+              {isArabic 
+                ? 'المزامنة اللحظية نشطة: عند تفعيلك من الإدارة تفتح الشاشة فوراً دون تحديث الصفحة ⚡' 
+                : 'Real-time sync active: Unlocks instantly once approved by admin ⚡'}
+            </span>
+          </div>
         </div>
 
         {/* Body Section */}

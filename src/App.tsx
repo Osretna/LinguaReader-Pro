@@ -12,6 +12,7 @@ import { ReadingMasteryGuideModal } from './components/ReadingMasteryGuideModal'
 import { GoogleAuthModal } from './components/GoogleAuthModal';
 import { SubscriptionLockModal } from './components/SubscriptionLockModal';
 import { AdminPanelModal } from './components/AdminPanelModal';
+import { GlobalAppLockModal } from './components/GlobalAppLockModal';
 import { TrialBanner } from './components/TrialBanner';
 import { ContentItem, ReaderSettings, UserStats, CEFRLevel, AuthUser } from './types';
 import { StorageService, DEFAULT_SETTINGS, DEFAULT_STATS } from './services/storage';
@@ -30,6 +31,10 @@ export default function App() {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(() => !AuthService.getCurrentUser());
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [isForceUnlocked, setIsForceUnlocked] = useState(false);
+
+  // Global App State (Kill Switch & Broadcast Notifications)
+  const [globalAppState, setGlobalAppState] = useState<{ isAppLocked: boolean; lockReason?: string }>({ isAppLocked: false });
+  const [liveNotice, setLiveNotice] = useState<{ message: string; type: 'success' | 'warning' | 'error' } | null>(null);
 
   // Other Modals
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -55,43 +60,96 @@ export default function App() {
     }
   }, []);
 
-  // Real-time Cloud Sync Listener for current user
+  // Global App Lock & Broadcast real-time listener
   useEffect(() => {
-    if (!currentUser?.id) return;
-    
-    // Listen for remote activation by admin
-    const unsub = FirebaseService.listenToMyUser(currentUser.id, (updatedUser) => {
-      if (updatedUser) {
-        // If user was activated remotely by admin, update locally and unlock immediately
-        if (
-          updatedUser.subscription.status === 'active' || 
-          updatedUser.subscription.status === 'lifetime' || 
-          updatedUser.role === 'admin'
-        ) {
-          AuthService.unlockDevice();
-          setIsForceUnlocked(true);
-          AuthService.saveUser(updatedUser, false);
-          setCurrentUser(updatedUser);
-        } else if (updatedUser.subscription.status === 'expired') {
-          AuthService.lockDevice();
-          setCurrentUser(prev => prev ? { 
-            ...prev, 
-            subscription: { ...prev.subscription, status: 'expired', isExpired: true, trialSecondsRemaining: 0 } 
-          } : null);
-        } else if (updatedUser.subscription.status === 'trial') {
-          // Admin renewed 5-minute trial remotely
-          AuthService.unlockDevice();
-          setIsForceUnlocked(false);
-          AuthService.saveUser(updatedUser, false);
-          setCurrentUser(updatedUser);
-        }
+    const unsubGlobal = FirebaseService.listenToGlobalAppState((state) => {
+      setGlobalAppState({
+        isAppLocked: state.isAppLocked,
+        lockReason: state.lockReason,
+      });
+
+      if (state.broadcastNotice) {
+        setLiveNotice({
+          message: state.broadcastNotice,
+          type: 'warning',
+        });
+        setTimeout(() => setLiveNotice(null), 8000);
       }
     });
 
     return () => {
+      unsubGlobal?.();
+    };
+  }, []);
+
+  // Real-time Cloud Sync Listener for current user (Instant sub-100ms activation/lock)
+  useEffect(() => {
+    if (!currentUser?.id) return;
+    
+    // Listen for remote activation, trial renewal, or revoking by admin
+    const unsub = FirebaseService.listenToMyUser(
+      currentUser.id, 
+      (updatedUser) => {
+        if (updatedUser) {
+          const prevStatus = currentUser.subscription.status;
+          const newStatus = updatedUser.subscription.status;
+
+          // If user was activated remotely by admin, update locally and unlock immediately without refresh
+          if (
+            newStatus === 'active' || 
+            newStatus === 'lifetime' || 
+            updatedUser.role === 'admin'
+          ) {
+            AuthService.unlockDevice();
+            setIsForceUnlocked(true);
+            AuthService.saveUser(updatedUser, false);
+            setCurrentUser(updatedUser);
+
+            if (prevStatus !== newStatus) {
+              setLiveNotice({
+                message: newStatus === 'lifetime' 
+                  ? '🎉 تم تفعيل الوصول الدائم (مدى الحياة) لحسابك من الإدارة لحظياً!' 
+                  : '🎉 تم تفعيل اشتراكك الشهري (100 ج.م) بنجاح من لوحة تحكم الإدارة لحظياً!',
+                type: 'success',
+              });
+              setTimeout(() => setLiveNotice(null), 7000);
+            }
+          } else if (newStatus === 'expired') {
+            // Admin revoked access or trial ended
+            AuthService.lockDevice();
+            setIsForceUnlocked(false);
+            setCurrentUser(prev => prev ? { 
+              ...prev, 
+              subscription: { ...prev.subscription, status: 'expired', isExpired: true, trialSecondsRemaining: 0 } 
+            } : null);
+
+            setLiveNotice({
+              message: '🔒 تم إيقاف الصلاحية وقفل التطبيق بواسطة الإدارة',
+              type: 'error',
+            });
+            setTimeout(() => setLiveNotice(null), 7000);
+          } else if (newStatus === 'trial') {
+            // Admin renewed 5-minute trial remotely
+            AuthService.unlockDevice();
+            setIsForceUnlocked(false);
+            AuthService.saveUser(updatedUser, false);
+            setCurrentUser(updatedUser);
+
+            setLiveNotice({
+              message: '⏱️ تم تجديد فترة التجربة (5 دقائق) لحسابك من الإدارة وتفعيلها فوراً!',
+              type: 'success',
+            });
+            setTimeout(() => setLiveNotice(null), 7000);
+          }
+        }
+      },
+      currentUser.email
+    );
+
+    return () => {
       unsub?.();
     };
-  }, [currentUser?.id]);
+  }, [currentUser?.id, currentUser?.email]);
 
   // 5-Minute Trial Timer Interval (Smooth 1-second ticks based on absolute timestamp)
   useEffect(() => {
@@ -308,6 +366,38 @@ export default function App() {
           refreshStats();
         }}
         isArabic={isArabic}
+      />
+
+      {/* Instant Real-time Notification Banner */}
+      {liveNotice && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 max-w-md w-full px-4 animate-bounce">
+          <div className={`p-4 rounded-2xl shadow-2xl border text-sm font-bold flex items-center justify-between gap-3 ${
+            liveNotice.type === 'success' 
+              ? 'bg-emerald-900/95 text-emerald-100 border-emerald-500/80 shadow-emerald-950/50' 
+              : liveNotice.type === 'error'
+              ? 'bg-rose-900/95 text-rose-100 border-rose-500/80 shadow-rose-950/50'
+              : 'bg-amber-900/95 text-amber-100 border-amber-500/80 shadow-amber-950/50'
+          }`}>
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping shrink-0" />
+              <span>{liveNotice.message}</span>
+            </div>
+            <button 
+              onClick={() => setLiveNotice(null)}
+              className="text-white/80 hover:text-white text-xs px-2 py-1 rounded-lg bg-black/20 cursor-pointer"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Global App Lock (Kill Switch) Modal */}
+      <GlobalAppLockModal
+        isLocked={globalAppState.isAppLocked && currentUser?.role !== 'admin' && currentUser?.email?.toLowerCase() !== OWNER_EMAIL.toLowerCase()}
+        reason={globalAppState.lockReason}
+        isArabic={isArabic}
+        onAdminUnlock={() => setGlobalAppState(prev => ({ ...prev, isAppLocked: false }))}
       />
 
       {/* Subscription / 5-Minute Trial Lock Modal (Barrier) */}

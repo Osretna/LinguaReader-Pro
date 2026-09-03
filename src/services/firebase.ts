@@ -270,11 +270,14 @@ export class FirebaseService {
   }
 
   /**
-   * Admin updates a user's subscription in Firestore & RTDB (e.g. grants 30 days or Lifetime).
+   * Admin updates a user's subscription in Firestore & RTDB (e.g. grants 30 days, Lifetime, or resets trial).
+   * Instantly notifies the user's screen in real time without refreshing.
    */
   public static async updateUserSubscription(
     userId: string, 
-    subscription: Partial<UserSubscription>
+    subscription: Partial<UserSubscription>,
+    fullUser?: AuthUser,
+    email?: string
   ): Promise<boolean> {
     if (!this.isConnected()) return false;
 
@@ -285,16 +288,50 @@ export class FirebaseService {
 
     let rtdbSuccess = false;
 
-    // 1. Update in RTDB (Instant real-time update)
+    // 1. Update in RTDB (Instant real-time push to all connected clients)
     try {
-      const rtdbUserRef = ref(rtdb, `users/${userId}/subscription`);
-      await update(rtdbUserRef, subscription);
+      if (fullUser) {
+        const fullPayload = {
+          ...fullUser,
+          subscription: { ...fullUser.subscription, ...subscription },
+          updatedAt: new Date().toISOString(),
+        };
+        const rtdbUserRef = ref(rtdb, `users/${userId}`);
+        await set(rtdbUserRef, fullPayload);
+
+        // Also save indexed by clean email for instant matching
+        const targetEmail = email || fullUser.email;
+        if (targetEmail) {
+          const cleanEmail = targetEmail.toLowerCase().replace(/[.#$[\]/]/g, '_');
+          const rtdbEmailRef = ref(rtdb, `usersByEmail/${cleanEmail}`);
+          await set(rtdbEmailRef, fullPayload);
+        }
+      } else {
+        const rtdbUserRef = ref(rtdb, `users/${userId}/subscription`);
+        await update(rtdbUserRef, subscription);
+      }
       rtdbSuccess = true;
     } catch (e) {
       console.warn('RTDB updateUserSubscription notice:', e);
     }
 
-    // 2. Update in Firestore if not exhausted
+    // 2. Broadcast through local BroadcastChannel for 0ms instant tab update
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        const bc = new BroadcastChannel('lingua_realtime_admin_channel');
+        bc.postMessage({
+          type: 'USER_SUBSCRIPTION_UPDATED',
+          userId,
+          email: email || fullUser?.email,
+          subscription,
+          user: fullUser ? { ...fullUser, subscription: { ...fullUser.subscription, ...subscription } } : undefined,
+          timestamp: Date.now(),
+        });
+        bc.close();
+      }
+    } catch {}
+
+    // 3. Update in Firestore if not exhausted
     if (!this.isFirestoreExhausted) {
       try {
         const userRef = doc(db, 'users', userId);
@@ -312,68 +349,241 @@ export class FirebaseService {
 
   /**
    * Listen to current user's profile in real time.
-   * If the admin activates this user remotely from their phone, their screen unlocks automatically!
+   * If the admin activates this user remotely or renews their 5 minutes, their screen unlocks automatically without refresh!
    */
   public static listenToMyUser(
     userId: string, 
-    onUserChanged: (user: AuthUser) => void
+    onUserChanged: (user: AuthUser) => void,
+    userEmail?: string
   ): (() => void) | null {
     if (!this.isConnected()) return null;
 
     let unsubFirestore: (() => void) | null = null;
-    let unsubRTDB: (() => void) | null = null;
+    let unsubRTDBUser: (() => void) | null = null;
+    let unsubRTDBEmail: (() => void) | null = null;
+    let bc: BroadcastChannel | null = null;
 
-    const setupRTDBListener = () => {
-      try {
-        const rtdbUserRef = ref(rtdb, `users/${userId}`);
-        unsubRTDB = onValue(rtdbUserRef, (snap) => {
-          if (snap.exists()) {
-            onUserChanged(snap.val() as AuthUser);
+    // 1. RTDB Primary Realtime Listener (Sub-100ms WebSocket push)
+    try {
+      const rtdbUserRef = ref(rtdb, `users/${userId}`);
+      unsubRTDBUser = onValue(rtdbUserRef, (snap) => {
+        if (snap.exists()) {
+          const val = snap.val();
+          if (val && (val.id || val.email)) {
+            onUserChanged(val as AuthUser);
           }
-        }, (err) => {
-          console.warn('RTDB listenToMyUser notice:', err);
+        }
+      }, (err) => {
+        console.warn('RTDB listenToMyUser notice:', err);
+      });
+
+      // Also listen by sanitized email if provided
+      if (userEmail) {
+        const cleanEmail = userEmail.toLowerCase().replace(/[.#$[\]/]/g, '_');
+        const rtdbEmailRef = ref(rtdb, `usersByEmail/${cleanEmail}`);
+        unsubRTDBEmail = onValue(rtdbEmailRef, (snap) => {
+          if (snap.exists()) {
+            const val = snap.val();
+            if (val && (val.id || val.email)) {
+              onUserChanged(val as AuthUser);
+            }
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('RTDB setup listener notice:', e);
+    }
+
+    // 2. BroadcastChannel Listener for instant 0ms tab-to-tab update
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        bc = new BroadcastChannel('lingua_realtime_admin_channel');
+        bc.onmessage = (event) => {
+          const data = event.data;
+          if (data && data.type === 'USER_SUBSCRIPTION_UPDATED') {
+            if (
+              data.userId === userId || 
+              (userEmail && data.email && data.email.toLowerCase() === userEmail.toLowerCase())
+            ) {
+              if (data.user) {
+                onUserChanged(data.user);
+              }
+            }
+          }
+        };
+      }
+    } catch {}
+
+    // 3. Firestore Listener as secondary fallback
+    if (!this.isFirestoreExhausted) {
+      try {
+        const userRef = doc(db, 'users', userId);
+        unsubFirestore = onSnapshot(userRef, (docSnap) => {
+          if (docSnap.exists()) {
+            onUserChanged(docSnap.data() as AuthUser);
+          }
+        }, (err: any) => {
+          if (err?.code === 'resource-exhausted' || err?.message?.includes('Quota exceeded')) {
+            this.isFirestoreExhausted = true;
+          }
+          if (unsubFirestore) {
+            try { unsubFirestore(); } catch {}
+            unsubFirestore = null;
+          }
         });
       } catch (e) {
-        console.warn('RTDB listenToMyUser setup notice:', e);
+        console.warn('Firestore listener notice:', e);
+      }
+    }
+
+    return () => {
+      if (unsubRTDBUser) unsubRTDBUser();
+      if (unsubRTDBEmail) unsubRTDBEmail();
+      if (unsubFirestore) unsubFirestore();
+      if (bc) {
+        try { bc.close(); } catch {}
       }
     };
+  }
 
-    if (this.isFirestoreExhausted) {
-      setupRTDBListener();
-      return () => {
-        if (unsubRTDB) unsubRTDB();
-      };
+  // =======================================================================
+  // ⚡ 2.5 Global App Lock & Broadcast System (قفل التطبيق بالكامل أو إلغاء القفل)
+  // =======================================================================
+
+  /**
+   * Set Global App Lock (Kill Switch) from Admin Panel.
+   * Immediately shuts down or re-enables the app for all active users without refresh.
+   */
+  public static async setGlobalAppLock(
+    isLocked: boolean, 
+    reason: string = 'تم إغلاق التطبيق بواسطة الإدارة لأعمال الصيانة والتحديثات',
+    adminEmail?: string
+  ): Promise<boolean> {
+    const payload = {
+      isAppLocked: isLocked,
+      lockReason: reason,
+      lastCommand: isLocked ? 'LOCK_APP' : 'UNLOCK_APP',
+      lastCommandAt: Date.now(),
+      updatedBy: adminEmail || 'Admin',
+    };
+
+    // 1. RTDB Update (Instant worldwide push)
+    try {
+      const appStateRef = ref(rtdb, 'system/appState');
+      await set(appStateRef, payload);
+    } catch (e) {
+      console.warn('RTDB setGlobalAppLock notice:', e);
+    }
+
+    // 2. BroadcastChannel (0ms local push)
+    try {
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        const bc = new BroadcastChannel('lingua_realtime_admin_channel');
+        bc.postMessage({
+          type: 'GLOBAL_APP_LOCK_CHANGED',
+          isLocked,
+          reason,
+          timestamp: Date.now(),
+        });
+        bc.close();
+      }
+    } catch {}
+
+    // 3. Local storage backup
+    try {
+      localStorage.setItem('lingua_global_app_locked', isLocked ? 'true' : 'false');
+      localStorage.setItem('lingua_global_lock_reason', reason);
+    } catch {}
+
+    return true;
+  }
+
+  /**
+   * Send Instant Broadcast Notice to all users
+   */
+  public static async setGlobalBroadcastNotice(notice: string | null): Promise<boolean> {
+    try {
+      const noticeRef = ref(rtdb, 'system/appState/broadcastNotice');
+      await set(noticeRef, notice);
+
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        const bc = new BroadcastChannel('lingua_realtime_admin_channel');
+        bc.postMessage({
+          type: 'GLOBAL_BROADCAST_NOTICE',
+          notice,
+          timestamp: Date.now(),
+        });
+        bc.close();
+      }
+      return true;
+    } catch (e) {
+      console.warn('setGlobalBroadcastNotice notice:', e);
+      return false;
+    }
+  }
+
+  /**
+   * Listen to Global App State (Lock status & Broadcasts)
+   */
+  public static listenToGlobalAppState(
+    callback: (state: { isAppLocked: boolean; lockReason: string; broadcastNotice?: string | null }) => void
+  ): (() => void) | null {
+    if (!this.isConnected()) return null;
+
+    let unsubRTDB: (() => void) | null = null;
+    let bc: BroadcastChannel | null = null;
+
+    try {
+      const appStateRef = ref(rtdb, 'system/appState');
+      unsubRTDB = onValue(appStateRef, (snap) => {
+        if (snap.exists()) {
+          const val = snap.val();
+          callback({
+            isAppLocked: Boolean(val?.isAppLocked),
+            lockReason: val?.lockReason || 'تم إغلاق التطبيق بواسطة الإدارة',
+            broadcastNotice: val?.broadcastNotice || null,
+          });
+        } else {
+          callback({
+            isAppLocked: false,
+            lockReason: '',
+            broadcastNotice: null,
+          });
+        }
+      }, (err) => {
+        console.warn('RTDB listenToGlobalAppState notice:', err);
+      });
+    } catch (e) {
+      console.warn('listenToGlobalAppState setup notice:', e);
     }
 
     try {
-      const userRef = doc(db, 'users', userId);
-      unsubFirestore = onSnapshot(userRef, (docSnap) => {
-        if (docSnap.exists()) {
-          onUserChanged(docSnap.data() as AuthUser);
-        }
-      }, (err: any) => {
-        if (err?.code === 'resource-exhausted' || err?.message?.includes('Quota exceeded')) {
-          this.isFirestoreExhausted = true;
-        }
-        console.warn('listenToMyUser fallback to RTDB:', err?.message || err);
-        if (unsubFirestore) {
-          try { unsubFirestore(); } catch {}
-          unsubFirestore = null;
-        }
-        setupRTDBListener();
-      });
+      if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+        bc = new BroadcastChannel('lingua_realtime_admin_channel');
+        bc.onmessage = (event) => {
+          const data = event.data;
+          if (data && data.type === 'GLOBAL_APP_LOCK_CHANGED') {
+            callback({
+              isAppLocked: Boolean(data.isLocked),
+              lockReason: data.reason || 'تم إغلاق التطبيق بواسطة الإدارة',
+            });
+          } else if (data && data.type === 'GLOBAL_BROADCAST_NOTICE') {
+            callback({
+              isAppLocked: false,
+              lockReason: '',
+              broadcastNotice: data.notice,
+            });
+          }
+        };
+      }
+    } catch {}
 
-      return () => {
-        if (unsubFirestore) unsubFirestore();
-        if (unsubRTDB) unsubRTDB();
-      };
-    } catch (e) {
-      console.warn('listenToMyUser init error, using RTDB:', e);
-      setupRTDBListener();
-      return () => {
-        if (unsubRTDB) unsubRTDB();
-      };
-    }
+    return () => {
+      if (unsubRTDB) unsubRTDB();
+      if (bc) {
+        try { bc.close(); } catch {}
+      }
+    };
   }
 
   // =======================================================================

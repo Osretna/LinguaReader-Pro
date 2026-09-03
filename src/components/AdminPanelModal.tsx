@@ -75,17 +75,38 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState<string | null>(null);
 
+  // Global App Lock & Broadcast state (Instant realtime kill switch)
+  const [isAppLockedGlobally, setIsAppLockedGlobally] = useState<boolean>(false);
+  const [lockReasonInput, setLockReasonInput] = useState<string>('تم إغلاق التطبيق بواسطة الإدارة لأعمال الصيانة والتحديثات');
+  const [isTogglingLock, setIsTogglingLock] = useState<boolean>(false);
+  const [broadcastInput, setBroadcastInput] = useState<string>('');
+  const [isSendingBroadcast, setIsSendingBroadcast] = useState<boolean>(false);
+
   // Live Cloud Users state from Firebase
   const [cloudUsers, setCloudUsers] = useState<AuthUser[] | null>(null);
   const isCloudConnected = FirebaseService.isConnected();
 
   useEffect(() => {
-    if (!isOpen || !sessionAuthenticated || !isCloudConnected) return;
-    const unsub = FirebaseService.subscribeToCloudUsers((users) => {
-      setCloudUsers(users);
+    if (!isOpen || !sessionAuthenticated) return;
+    
+    // Listen to global app lock state in real time
+    const unsubGlobal = FirebaseService.listenToGlobalAppState((state) => {
+      setIsAppLockedGlobally(state.isAppLocked);
+      if (state.lockReason) {
+        setLockReasonInput(state.lockReason);
+      }
     });
+
+    let unsubUsers: (() => void) | null = null;
+    if (isCloudConnected) {
+      unsubUsers = FirebaseService.subscribeToCloudUsers((users) => {
+        setCloudUsers(users);
+      });
+    }
+
     return () => {
-      unsub?.();
+      unsubGlobal?.();
+      unsubUsers?.();
     };
   }, [isOpen, sessionAuthenticated, isCloudConnected]);
 
@@ -124,14 +145,14 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
 
     const res = AuthService.grantUserPermission(userObj, duration, 'مدير التطبيق');
     if (res.success && res.user) {
-      // Direct Firebase update in real time
+      // Direct Firebase update in real time with full user payload and email indexing
       await FirebaseService.syncUserToCloud(res.user);
-      await FirebaseService.updateUserSubscription(res.user.id, res.user.subscription);
+      await FirebaseService.updateUserSubscription(res.user.id, res.user.subscription, res.user, res.user.email);
       
       // Update local cloud state immediately
       setCloudUsers(prev => prev ? prev.map(u => u.id === res.user!.id ? res.user! : u) : [res.user!]);
       
-      setNotice({ text: duration === 'lifetime' ? 'تم تفعيل الوصول الدائم مدى الحياة بنجاح 🟢' : `تم تفعيل الاشتراك لمدة ${duration} يوم (100 ج.م) بنجاح 🟢`, type: 'success' });
+      setNotice({ text: duration === 'lifetime' ? 'تم تفعيل الوصول الدائم مدى الحياة بنجاح 🟢 وتطبيقه لحظياً عند المشترك' : `تم تفعيل الاشتراك لمدة ${duration} يوم (100 ج.م) بنجاح 🟢 وتطبيقه لحظياً عند المشترك`, type: 'success' });
       onRefreshData();
     } else {
       setNotice({ text: res.message, type: 'error' });
@@ -165,10 +186,10 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
         }
       };
       await FirebaseService.syncUserToCloud(updatedUser);
-      await FirebaseService.updateUserSubscription(updatedUser.id, updatedUser.subscription);
+      await FirebaseService.updateUserSubscription(updatedUser.id, updatedUser.subscription, updatedUser, updatedUser.email);
       
       setCloudUsers(prev => prev ? prev.map(u => u.id === updatedUser.id ? updatedUser : u) : [updatedUser]);
-      setNotice({ text: 'تمت إعادة 5 دقائق تجربة مجانية للمستخدم وتحديث حسابه سحابياً بنجاح 🟢', type: 'success' });
+      setNotice({ text: 'تمت إعادة 5 دقائق تجربة مجانية وتطبيقها لحظياً عند المشترك بدون ريفريش 🟢', type: 'success' });
       onRefreshData();
     } else {
       setNotice({ text: 'تعذر تجديد التجربة للمستخدم', type: 'error' });
@@ -200,11 +221,45 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
         }
       };
       await FirebaseService.syncUserToCloud(updatedUser);
-      await FirebaseService.updateUserSubscription(updatedUser.id, updatedUser.subscription);
+      await FirebaseService.updateUserSubscription(updatedUser.id, updatedUser.subscription, updatedUser, updatedUser.email);
       
       setCloudUsers(prev => prev ? prev.map(u => u.id === updatedUser.id ? updatedUser : u) : [updatedUser]);
-      setNotice({ text: 'تم إيقاف صلاحية المستخدم وقفل الحساب لحظياً 🔴', type: 'success' });
+      setNotice({ text: 'تم إيقاف صلاحية المستخدم وقفل التطبيق عليه فوراً ولحظياً 🔴', type: 'success' });
       onRefreshData();
+    }
+  };
+
+  const handleToggleGlobalLock = async () => {
+    setIsTogglingLock(true);
+    const nextLocked = !isAppLockedGlobally;
+    try {
+      await FirebaseService.setGlobalAppLock(nextLocked, lockReasonInput, currentUser?.email || 'admin');
+      setIsAppLockedGlobally(nextLocked);
+      setNotice({
+        text: nextLocked 
+          ? 'تم قفل التطبيق بالكامل عن جميع المستخدمين لحظياً 🔒' 
+          : 'تم فتح وإلغاء قفل التطبيق لجميع المستخدمين لحظياً 🟢',
+        type: 'success',
+      });
+    } catch (e) {
+      setNotice({ text: 'فشل تغيير حالة قفل التطبيق', type: 'error' });
+    } finally {
+      setIsTogglingLock(false);
+    }
+  };
+
+  const handleSendBroadcast = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!broadcastInput.trim()) return;
+    setIsSendingBroadcast(true);
+    try {
+      await FirebaseService.setGlobalBroadcastNotice(broadcastInput.trim());
+      setNotice({ text: 'تم إرسال التنبيه العام لحظياً لجميع المستخدمين 📢', type: 'success' });
+      setBroadcastInput('');
+    } catch (e) {
+      setNotice({ text: 'فشل إرسال التنبيه', type: 'error' });
+    } finally {
+      setIsSendingBroadcast(false);
     }
   };
 
@@ -421,6 +476,102 @@ export const firebaseConfig = {
             {activeTab === 'users' && (
               <div className="p-5 overflow-y-auto space-y-4 grow">
                 
+                {/* 🔒 1. Global App Lock (Kill Switch) Control Card */}
+                <div className={`p-4 rounded-2xl border transition-all duration-300 ${
+                  isAppLockedGlobally 
+                    ? 'bg-rose-950/20 border-rose-500/80 shadow-md shadow-rose-950/10' 
+                    : 'bg-gradient-to-r from-slate-900 to-indigo-950 text-white border-slate-700/80 shadow-sm'
+                }`}>
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-3 h-3 rounded-full ${isAppLockedGlobally ? 'bg-rose-500 animate-ping' : 'bg-emerald-400'}`} />
+                        <span className="text-xs font-black tracking-wide uppercase">
+                          {isArabic ? 'قفل التطبيق العام (Kill Switch)' : 'Global App Lock'}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          isAppLockedGlobally 
+                            ? 'bg-rose-600 text-white animate-pulse' 
+                            : 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/30'
+                        }`}>
+                          {isAppLockedGlobally 
+                            ? (isArabic ? '🔴 التطبيق مغلق كلياً الآن' : '🔴 App Locked Globally') 
+                            : (isArabic ? '🟢 التطبيق متاح ويعمل للجميع' : '🟢 App Open for All')}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-300 leading-relaxed">
+                        {isArabic 
+                          ? 'تنفيذ لحظي: عند قفل التطبيق يغلق فوراً على شاشة كل المستخدمين بدون ريفريش، وعند إلغاء القفل يفتح فوراً.'
+                          : 'Instant action: Locks or unlocks app instantly on all users screens with zero refresh.'}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={handleToggleGlobalLock}
+                        disabled={isTogglingLock}
+                        className={`px-4 py-2 rounded-xl text-xs font-black flex items-center gap-2 transition cursor-pointer shadow-md ${
+                          isAppLockedGlobally
+                            ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-600/30'
+                            : 'bg-rose-600 hover:bg-rose-700 text-white shadow-rose-600/30'
+                        }`}
+                      >
+                        {isTogglingLock ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : isAppLockedGlobally ? (
+                          <CheckCircle className="w-3.5 h-3.5" />
+                        ) : (
+                          <Ban className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          {isAppLockedGlobally 
+                            ? (isArabic ? 'إلغاء القفل وفتح التطبيق للجميع 🟢' : 'Unlock App for All') 
+                            : (isArabic ? 'قفل التطبيق بالكامل الآن 🔒' : 'Lock Entire App Now')}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Reason Customizer */}
+                  <div className="mt-3 pt-3 border-t border-white/10 flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+                    <span className="text-[11px] font-semibold text-slate-300 shrink-0">
+                      {isArabic ? 'سبب القفل الظاهر للمستخدمين:' : 'Lock Reason:'}
+                    </span>
+                    <input
+                      type="text"
+                      value={lockReasonInput}
+                      onChange={(e) => setLockReasonInput(e.target.value)}
+                      placeholder={isArabic ? 'اكتب سبب القفل أو الصيانة...' : 'Lock reason...'}
+                      className="grow px-3 py-1.5 rounded-lg bg-black/30 border border-white/20 text-xs text-white placeholder-slate-400 focus:border-indigo-400 outline-hidden"
+                    />
+                    <button
+                      onClick={async () => {
+                        await FirebaseService.setGlobalAppLock(isAppLockedGlobally, lockReasonInput, currentUser?.email || 'admin');
+                        setNotice({ text: 'تم تحديث سبب الإغلاق لحظياً للجميع', type: 'success' });
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[11px] font-bold transition cursor-pointer shrink-0"
+                    >
+                      {isArabic ? 'حفظ السبب' : 'Save Reason'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* ⚡ 2. Instant Realtime Synchronization Notification Banner */}
+                <div className="p-3 rounded-xl bg-indigo-50 border border-indigo-200 text-indigo-950 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-emerald-500 animate-ping shrink-0" />
+                    <span className="font-bold">
+                      {isArabic ? 'المزامنة السحابية اللحظية الفورية (WebSocket RTDB) نشطة ⚡' : 'Real-time WebSocket Sync Active ⚡'}
+                    </span>
+                    <span className="text-indigo-700 hidden sm:inline">
+                      {isArabic ? '— الأوامر تطبق لحظياً عند المشترك بدون ريفريش نهائياً' : '— Instant update with 0 refresh'}
+                    </span>
+                  </div>
+                  <span className="px-2 py-0.5 rounded-md bg-indigo-600 text-white text-[10px] font-bold shrink-0 self-start sm:self-auto">
+                    {isArabic ? 'فوري 0ms' : '0ms Push'}
+                  </span>
+                </div>
+
                 {/* Action Bar: Search & Add User */}
                 <div className="flex flex-col sm:flex-row gap-2 justify-between items-stretch sm:items-center">
                   <div className="relative grow max-w-md">

@@ -1,17 +1,81 @@
 export * from './types/index';
 
+export interface UserPermissions {
+  canExportData: boolean;
+  canUseAI: boolean;
+  canAccessReports: boolean;
+  canManageTeam: boolean;
+  unlimitedStorage: boolean;
+  canUseTTS?: boolean;
+  canUseVoiceRecognition?: boolean;
+  canImportCustomTexts?: boolean;
+}
+
 export interface UserProfile {
-  uid: string;
+  uid?: string;
+  id?: string;
   email: string | null;
-  displayName: string | null;
-  photoURL: string | null;
-  isActivated: boolean;
-  role: 'admin' | 'user';
-  createdAt: string;
-  lastLoginAt: string;
+  name?: string;
+  displayName?: string | null;
+  photoURL?: string | null;
+  avatar?: string;
+  avatarBg?: string;
+  isActivated?: boolean;
+  role?: 'admin' | 'user';
+  createdAt?: string;
+  lastLoginAt?: string;
   activationDate?: string;
   activatedBy?: string;
   notes?: string;
+  status?: 'active' | 'trial' | 'expired' | 'banned';
+  plan?: 'monthly' | 'lifetime' | 'custom' | 'trial_5m';
+  planLabel?: string;
+  expiresAt?: number;
+  isBanned?: boolean;
+  permissions?: UserPermissions;
+  lastAction?: string;
+  lastActionTime?: number;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  timestamp: number;
+  action: string;
+  targetUser: string;
+  badgeColor?: 'blue' | 'emerald' | 'rose' | 'amber' | 'purple' | string;
+}
+
+export type RealtimeEventType = 
+  | 'STATE_UPDATE' 
+  | 'STATE_INIT' 
+  | 'APP_LOCK_CHANGED' 
+  | 'USER_UPDATED' 
+  | 'BROADCAST_NOTICE';
+
+export interface RealtimeEvent {
+  type: RealtimeEventType;
+  state?: any;
+  isLocked?: boolean;
+  reason?: string;
+  user?: any;
+  notice?: string | null;
+}
+
+export interface SystemState {
+  isAppLocked: boolean;
+  lockReason: string;
+  broadcastNotice: string | null;
+  users: UserProfile[];
+  auditLogs: AuditLogEntry[];
+}
+
+export interface SystemAppState {
+  isAppLocked: boolean;
+  lockReason: string;
+  broadcastNotice?: string | null;
+  lastCommand?: string;
+  lastCommandAt?: number;
+  updatedBy?: string;
 }
 
 export interface WordDefinition {

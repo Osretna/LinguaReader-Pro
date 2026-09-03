@@ -17,7 +17,7 @@ export const ADMIN_MASTER_PASSWORD = '4704600vdlhs@';
 
 // Storage keys for persistent device lock across refreshes and restarts
 export const DEVICE_LOCK_KEY = 'lingua_device_trial_locked';
-export const DEVICE_TRIAL_SECONDS_KEY = 'lingua_device_trial_remaining_seconds';
+export const DEVICE_TRIAL_ENDS_KEY = 'lingua_device_trial_ends_at';
 export const DEVICE_UNLOCKED_KEY = 'lingua_device_unlocked_permanent';
 export const ADMIN_SESSION_AUTH_KEY = 'lingua_admin_session_auth';
 
@@ -45,7 +45,6 @@ export class AuthService {
   public static lockDevice(): void {
     try {
       localStorage.setItem(DEVICE_LOCK_KEY, 'true');
-      localStorage.setItem(DEVICE_TRIAL_SECONDS_KEY, '0');
     } catch (e) {
       console.error('Failed to lock device:', e);
     }
@@ -55,7 +54,7 @@ export class AuthService {
     try {
       localStorage.removeItem(DEVICE_LOCK_KEY);
       localStorage.setItem(DEVICE_UNLOCKED_KEY, 'true');
-      localStorage.setItem(DEVICE_TRIAL_SECONDS_KEY, TRIAL_DURATION_SECONDS.toString());
+      localStorage.removeItem(DEVICE_TRIAL_ENDS_KEY);
     } catch (e) {
       console.error('Failed to unlock device:', e);
     }
@@ -71,32 +70,30 @@ export class AuthService {
 
   public static getDeviceRemainingTrialSeconds(): number {
     try {
-      const val = localStorage.getItem(DEVICE_TRIAL_SECONDS_KEY);
-      if (val === null) {
-        localStorage.setItem(DEVICE_TRIAL_SECONDS_KEY, TRIAL_DURATION_SECONDS.toString());
+      if (this.isDeviceUnlocked()) return TRIAL_DURATION_SECONDS;
+      if (localStorage.getItem(DEVICE_LOCK_KEY) === 'true') return 0;
+
+      let endsAtStr = localStorage.getItem(DEVICE_TRIAL_ENDS_KEY);
+      if (!endsAtStr) {
+        const endsAt = Date.now() + TRIAL_DURATION_SECONDS * 1000;
+        localStorage.setItem(DEVICE_TRIAL_ENDS_KEY, endsAt.toString());
         return TRIAL_DURATION_SECONDS;
       }
-      return Math.max(0, parseInt(val, 10) || 0);
+
+      const endsAt = parseInt(endsAtStr, 10);
+      const remaining = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+      if (remaining <= 0) {
+        this.lockDevice();
+        return 0;
+      }
+      return remaining;
     } catch {
       return TRIAL_DURATION_SECONDS;
     }
   }
 
   public static tickDeviceTrial(): number {
-    try {
-      if (this.isDeviceLocked()) return 0;
-      let remaining = this.getDeviceRemainingTrialSeconds();
-      if (remaining > 0) {
-        remaining -= 1;
-        localStorage.setItem(DEVICE_TRIAL_SECONDS_KEY, remaining.toString());
-        if (remaining <= 0) {
-          this.lockDevice();
-        }
-      }
-      return remaining;
-    } catch {
-      return 0;
-    }
+    return this.getDeviceRemainingTrialSeconds();
   }
 
   // Admin Password Verification
@@ -191,19 +188,27 @@ export class AuthService {
         sub.status = 'expired';
         sub.isExpired = true;
         sub.notes = 'انتهت فترة الاشتراك الشهري';
-        this.saveUser(user);
+        this.lockDevice();
+        this.saveUser(user, true);
       }
       return user;
     }
 
-    // Trial validation
+    // Trial validation (using accurate timestamp)
     if (sub.status === 'trial') {
-      if (sub.trialSecondsRemaining <= 0) {
+      if (!sub.trialEndsAt) {
+        const sec = sub.trialSecondsRemaining > 0 ? sub.trialSecondsRemaining : TRIAL_DURATION_SECONDS;
+        sub.trialEndsAt = new Date(Date.now() + sec * 1000).toISOString();
+      }
+      const ends = new Date(sub.trialEndsAt).getTime();
+      const diffSec = Math.max(0, Math.ceil((ends - Date.now()) / 1000));
+      sub.trialSecondsRemaining = diffSec;
+      if (diffSec <= 0) {
         sub.status = 'expired';
         sub.isExpired = true;
         sub.trialSecondsRemaining = 0;
         this.lockDevice();
-        this.saveUser(user);
+        this.saveUser(user, true);
       }
     }
 
@@ -214,8 +219,8 @@ export class AuthService {
     return user;
   }
 
-  // Save/Update user in storage
-  public static saveUser(user: AuthUser): void {
+  // Save/Update user in storage (with optional Cloud Firestore sync)
+  public static saveUser(user: AuthUser, syncToCloud: boolean = true): void {
     try {
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
       
@@ -228,14 +233,16 @@ export class AuthService {
         allUsers.push(user);
       }
       localStorage.setItem(ALL_USERS_STORAGE_KEY, JSON.stringify(allUsers));
-      // Asynchronously sync to Cloud Firestore if connected
-      FirebaseService.syncUserToCloud(user).catch(() => {});
+      // Asynchronously sync to Cloud Firestore when requested (not on high-frequency local ticks)
+      if (syncToCloud) {
+        FirebaseService.syncUserToCloud(user).catch(() => {});
+      }
     } catch (e) {
       console.error('Failed to save user:', e);
     }
   }
 
-  // Decrement trial time by 1 second
+  // Accurate countdown tick
   public static tickTrial(user: AuthUser): AuthUser {
     if (user.role === 'admin' || user.email.toLowerCase() === OWNER_EMAIL.toLowerCase()) {
       return user;
@@ -245,15 +252,24 @@ export class AuthService {
       return user;
     }
 
-    if (user.subscription.trialSecondsRemaining > 0) {
-      user.subscription.trialSecondsRemaining -= 1;
-      if (user.subscription.trialSecondsRemaining <= 0) {
-        user.subscription.trialSecondsRemaining = 0;
-        user.subscription.status = 'expired';
-        user.subscription.isExpired = true;
-        this.lockDevice();
-      }
-      this.saveUser(user);
+    if (!user.subscription.trialEndsAt) {
+      const sec = user.subscription.trialSecondsRemaining > 0 ? user.subscription.trialSecondsRemaining : TRIAL_DURATION_SECONDS;
+      user.subscription.trialEndsAt = new Date(Date.now() + sec * 1000).toISOString();
+    }
+
+    const ends = new Date(user.subscription.trialEndsAt).getTime();
+    const diffSec = Math.max(0, Math.ceil((ends - Date.now()) / 1000));
+    
+    user.subscription.trialSecondsRemaining = diffSec;
+
+    if (diffSec <= 0) {
+      user.subscription.trialSecondsRemaining = 0;
+      user.subscription.status = 'expired';
+      user.subscription.isExpired = true;
+      this.lockDevice();
+      this.saveUser(user, true); // Sync expiration to cloud
+    } else {
+      this.saveUser(user, false); // Local-only persist to avoid cloud feedback loop
     }
 
     return user;
@@ -285,28 +301,46 @@ export class AuthService {
         user.subscription.status = 'lifetime';
         user.subscription.plan = 'lifetime';
         user.subscription.isExpired = false;
+        user.subscription.trialEndsAt = null;
+      } else if (!isOwner && user.subscription.status === 'trial') {
+        // If user is currently in trial, make sure trialEndsAt is computed accurately
+        if (!user.subscription.trialEndsAt) {
+          const sec = user.subscription.trialSecondsRemaining > 0 ? user.subscription.trialSecondsRemaining : TRIAL_DURATION_SECONDS;
+          user.subscription.trialEndsAt = new Date(Date.now() + sec * 1000).toISOString();
+        }
+        const ends = new Date(user.subscription.trialEndsAt).getTime();
+        const diffSec = Math.max(0, Math.ceil((ends - Date.now()) / 1000));
+        user.subscription.trialSecondsRemaining = diffSec;
+        if (diffSec <= 0) {
+          user.subscription.status = 'expired';
+          user.subscription.isExpired = true;
+          this.lockDevice();
+        }
       }
     } else {
-      const now = new Date().toISOString();
+      const now = new Date();
+      const trialEndsAt = new Date(now.getTime() + TRIAL_DURATION_SECONDS * 1000).toISOString();
       const initialSub: UserSubscription = isOwner ? {
         status: 'lifetime',
         plan: 'lifetime',
         planNameAr: 'حساب المدير والمصمم (وصول دائم)',
         planNameEn: 'Owner & Admin (Lifetime)',
-        startedAt: now,
+        startedAt: now.toISOString(),
         expiresAt: null,
         trialSecondsTotal: TRIAL_DURATION_SECONDS,
         trialSecondsRemaining: TRIAL_DURATION_SECONDS,
+        trialEndsAt: null,
         isExpired: false,
       } : {
         status: 'trial',
         plan: 'trial',
         planNameAr: 'تجربة مجانية (5 دقائق)',
         planNameEn: 'Free Trial (5 minutes)',
-        startedAt: now,
+        startedAt: now.toISOString(),
         expiresAt: null,
         trialSecondsTotal: TRIAL_DURATION_SECONDS,
         trialSecondsRemaining: TRIAL_DURATION_SECONDS,
+        trialEndsAt: trialEndsAt,
         isExpired: false,
       };
 
@@ -316,13 +350,13 @@ export class AuthService {
         name: profile.name,
         avatarUrl: profile.picture || `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(profile.email)}`,
         role: isOwner ? 'admin' : 'user',
-        createdAt: now,
-        lastLoginAt: now,
+        createdAt: now.toISOString(),
+        lastLoginAt: now.toISOString(),
         subscription: initialSub,
       };
     }
 
-    this.saveUser(user);
+    this.saveUser(user, true);
     // Persist current session so user state is never lost
     try {
       localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
@@ -351,14 +385,20 @@ export class AuthService {
 
   // Admin action: Grant custom permission (duration in days, or 'lifetime')
   public static grantUserPermission(
-    targetEmailOrId: string, 
+    targetUserOrId: AuthUser | string, 
     permission: 'lifetime' | number, // number of days, e.g. 30 for 1 month
     adminName: string = 'المصمم'
   ): { success: boolean; message: string; user?: AuthUser } {
     const allUsers = this.getAllUsers();
-    const target = allUsers.find(
-      u => u.id === targetEmailOrId || u.email.toLowerCase() === targetEmailOrId.toLowerCase()
-    );
+    let target: AuthUser | undefined;
+
+    if (typeof targetUserOrId === 'object' && targetUserOrId !== null) {
+      target = targetUserOrId;
+    } else {
+      target = allUsers.find(
+        u => u.id === targetUserOrId || u.email.toLowerCase() === (targetUserOrId as string).toLowerCase()
+      );
+    }
 
     if (!target) {
       return { success: false, message: 'المستخدم غير موجود' };
@@ -373,6 +413,8 @@ export class AuthService {
         planNameAr: 'وصول دائم ومفتوح (مدى الحياة)',
         planNameEn: 'Lifetime Unlimited Access',
         expiresAt: null,
+        trialEndsAt: null,
+        trialSecondsRemaining: TRIAL_DURATION_SECONDS,
         isExpired: false,
         notes: `تم منح وصول دائم بواسطة ${adminName} في ${now.toLocaleDateString('ar-EG')}`,
       };
@@ -385,17 +427,18 @@ export class AuthService {
         planNameAr: permission === 30 ? 'اشتراك شهري (100 جنيه)' : `فترة مخصصة (${permission} يوم)`,
         planNameEn: permission === 30 ? 'Monthly Subscription (100 EGP)' : `Custom Period (${permission} days)`,
         expiresAt: expDate.toISOString(),
+        trialEndsAt: null,
         isExpired: false,
         notes: `تم التفعيل لمدة ${permission} يوم بواسطة ${adminName}`,
       };
     }
 
-    this.saveUser(target);
-    this.unlockDevice();
-
-    // Refresh active session with the updated target
+    this.saveUser(target, true);
+    
+    // Refresh active session if the target matches current user
     const currentUser = this.getCurrentUser();
-    if (!currentUser || currentUser.id === target.id || currentUser.email.toLowerCase() === target.email.toLowerCase()) {
+    if (currentUser && (currentUser.id === target.id || currentUser.email.toLowerCase() === target.email.toLowerCase())) {
+      this.unlockDevice();
       try {
         localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(target));
       } catch (e) {
@@ -403,45 +446,86 @@ export class AuthService {
       }
     }
 
-    return { success: true, message: 'تم تحديث الصلاحيات بنجاح', user: target };
+    return { success: true, message: permission === 'lifetime' ? 'تم تفعيل الوصول الدائم مدى الحياة بنجاح' : `تم تفعيل الاشتراك لمدة ${permission} يوماً (100 ج.م) بنجاح`, user: target };
   }
 
   // Admin action: Reset trial (give another 5 minutes)
-  public static resetUserTrial(targetEmailOrId: string): boolean {
+  public static resetUserTrial(targetUserOrId: AuthUser | string): boolean {
     const allUsers = this.getAllUsers();
-    const target = allUsers.find(
-      u => u.id === targetEmailOrId || u.email.toLowerCase() === targetEmailOrId.toLowerCase()
-    );
+    let target: AuthUser | undefined;
+
+    if (typeof targetUserOrId === 'object' && targetUserOrId !== null) {
+      target = targetUserOrId;
+    } else {
+      target = allUsers.find(
+        u => u.id === targetUserOrId || u.email.toLowerCase() === (targetUserOrId as string).toLowerCase()
+      );
+    }
+
     if (!target) return false;
 
-    target.subscription.status = 'trial';
-    target.subscription.trialSecondsRemaining = TRIAL_DURATION_SECONDS;
-    target.subscription.isExpired = false;
-    this.saveUser(target);
+    const trialEndsAt = new Date(Date.now() + TRIAL_DURATION_SECONDS * 1000).toISOString();
+    target.subscription = {
+      ...target.subscription,
+      status: 'trial',
+      plan: 'trial',
+      planNameAr: 'تجربة مجانية (5 دقائق)',
+      planNameEn: 'Free Trial (5 minutes)',
+      trialSecondsTotal: TRIAL_DURATION_SECONDS,
+      trialSecondsRemaining: TRIAL_DURATION_SECONDS,
+      trialEndsAt: trialEndsAt,
+      isExpired: false,
+      notes: 'تم تجديد 5 دقائق تجربة مجانية بواسطة المدير',
+    };
+
+    this.saveUser(target, true);
 
     const currentUser = this.getCurrentUser();
-    if (currentUser && currentUser.id === target.id) {
-      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(target));
+    if (currentUser && (currentUser.id === target.id || currentUser.email.toLowerCase() === target.email.toLowerCase())) {
+      this.unlockDevice();
+      try {
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(target));
+      } catch (e) {
+        console.error('Failed to update active user session:', e);
+      }
     }
     return true;
   }
 
   // Admin action: Revoke access / Expire user
-  public static revokeUserAccess(targetEmailOrId: string): boolean {
+  public static revokeUserAccess(targetUserOrId: AuthUser | string): boolean {
     const allUsers = this.getAllUsers();
-    const target = allUsers.find(
-      u => u.id === targetEmailOrId || u.email.toLowerCase() === targetEmailOrId.toLowerCase()
-    );
+    let target: AuthUser | undefined;
+
+    if (typeof targetUserOrId === 'object' && targetUserOrId !== null) {
+      target = targetUserOrId;
+    } else {
+      target = allUsers.find(
+        u => u.id === targetUserOrId || u.email.toLowerCase() === (targetUserOrId as string).toLowerCase()
+      );
+    }
+
     if (!target) return false;
 
-    target.subscription.status = 'expired';
-    target.subscription.isExpired = true;
-    target.subscription.trialSecondsRemaining = 0;
-    this.saveUser(target);
+    target.subscription = {
+      ...target.subscription,
+      status: 'expired',
+      isExpired: true,
+      trialSecondsRemaining: 0,
+      trialEndsAt: new Date().toISOString(),
+      notes: 'تم إيقاف الصلاحية وقفل التطبيق بواسطة المدير',
+    };
+
+    this.saveUser(target, true);
 
     const currentUser = this.getCurrentUser();
-    if (currentUser && currentUser.id === target.id) {
-      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(target));
+    if (currentUser && (currentUser.id === target.id || currentUser.email.toLowerCase() === target.email.toLowerCase())) {
+      this.lockDevice();
+      try {
+        localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(target));
+      } catch (e) {
+        console.error('Failed to update active user session:', e);
+      }
     }
     return true;
   }

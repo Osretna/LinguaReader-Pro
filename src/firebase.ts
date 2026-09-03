@@ -61,42 +61,57 @@ googleProvider.setCustomParameters({
 export const ADMIN_EMAIL = 'vip.mohamed@gmail.com';
 
 /**
- * Sync user profile to Firestore
+ * Sync user profile to Firestore & Realtime Database with graceful error fallback
  */
 export async function syncUserProfile(user: FirebaseUser): Promise<UserProfile> {
-  const userRef = doc(db, 'users', user.uid);
-  const snap = await getDoc(userRef);
-
   const isAdmin = user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase() || 
                   user.email?.toLowerCase().includes('admin') || 
                   user.email?.toLowerCase().includes('mohamed');
 
-  if (snap.exists()) {
-    const existing = snap.data() as UserProfile;
-    const updated: UserProfile = {
-      ...existing,
-      email: user.email,
-      displayName: user.displayName || existing.displayName,
-      photoURL: user.photoURL || existing.photoURL,
-      lastLoginAt: new Date().toISOString(),
-      role: existing.role === 'admin' || isAdmin ? 'admin' : existing.role,
-      isActivated: existing.role === 'admin' || isAdmin ? true : existing.isActivated,
-    };
-    await updateDoc(userRef, updated as any);
-    return updated;
-  } else {
-    const newProfile: UserProfile = {
-      uid: user.uid,
-      email: user.email,
-      displayName: user.displayName || user.email?.split('@')[0] || 'مستخدم جديد',
-      photoURL: user.photoURL || null,
-      role: isAdmin ? 'admin' : 'user',
-      isActivated: isAdmin,
-      createdAt: new Date().toISOString(),
-      lastLoginAt: new Date().toISOString(),
-    };
-    await setDoc(userRef, newProfile);
-    return newProfile;
+  const profile: UserProfile = {
+    uid: user.uid,
+    email: user.email,
+    displayName: user.displayName || user.email?.split('@')[0] || 'مستخدم جديد',
+    photoURL: user.photoURL || null,
+    role: isAdmin ? 'admin' : 'user',
+    isActivated: isAdmin,
+    createdAt: new Date().toISOString(),
+    lastLoginAt: new Date().toISOString(),
+  };
+
+  // Sync to RTDB first (quota resilient)
+  try {
+    const rtdbUserRef = ref(rtdb, `users/${user.uid}`);
+    await set(rtdbUserRef, profile);
+  } catch (rtdbErr) {
+    console.warn("RTDB syncUserProfile notice:", rtdbErr);
+  }
+
+  // Sync to Firestore if possible
+  try {
+    const userRef = doc(db, 'users', user.uid);
+    const snap = await getDoc(userRef);
+
+    if (snap.exists()) {
+      const existing = snap.data() as UserProfile;
+      const updated: UserProfile = {
+        ...existing,
+        email: user.email,
+        displayName: user.displayName || existing.displayName,
+        photoURL: user.photoURL || existing.photoURL,
+        lastLoginAt: new Date().toISOString(),
+        role: existing.role === 'admin' || isAdmin ? 'admin' : existing.role,
+        isActivated: existing.role === 'admin' || isAdmin ? true : existing.isActivated,
+      };
+      await updateDoc(userRef, updated as any);
+      return updated;
+    } else {
+      await setDoc(userRef, profile);
+      return profile;
+    }
+  } catch (err) {
+    console.warn("Firestore syncUserProfile notice (fallback to profile):", err);
+    return profile;
   }
 }
 
@@ -104,16 +119,48 @@ export async function syncUserProfile(user: FirebaseUser): Promise<UserProfile> 
  * Listen to user profile changes
  */
 export function subscribeToUserProfile(uid: string, callback: (profile: UserProfile | null) => void) {
-  const userRef = doc(db, 'users', uid);
-  return onSnapshot(userRef, (snap) => {
-    if (snap.exists()) {
-      callback(snap.data() as UserProfile);
-    } else {
-      callback(null);
-    }
-  }, (err) => {
-    console.warn("subscribeToUserProfile snapshot notice:", err);
-  });
+  let unsubFirestore: (() => void) | null = null;
+  let unsubRTDB: (() => void) | null = null;
+
+  try {
+    const userRef = doc(db, 'users', uid);
+    unsubFirestore = onSnapshot(userRef, (snap) => {
+      if (snap.exists()) {
+        callback(snap.data() as UserProfile);
+      } else {
+        callback(null);
+      }
+    }, (err) => {
+      console.warn("subscribeToUserProfile fallback to RTDB:", err);
+      try {
+        const rtdbUserRef = ref(rtdb, `users/${uid}`);
+        unsubRTDB = onValue(rtdbUserRef, (snap) => {
+          if (snap.exists()) {
+            callback(snap.val() as UserProfile);
+          } else {
+            callback(null);
+          }
+        });
+      } catch {}
+    });
+  } catch (e) {
+    console.warn("subscribeToUserProfile error fallback:", e);
+    try {
+      const rtdbUserRef = ref(rtdb, `users/${uid}`);
+      unsubRTDB = onValue(rtdbUserRef, (snap) => {
+        if (snap.exists()) {
+          callback(snap.val() as UserProfile);
+        } else {
+          callback(null);
+        }
+      });
+    } catch {}
+  }
+
+  return () => {
+    if (unsubFirestore) unsubFirestore();
+    if (unsubRTDB) unsubRTDB();
+  };
 }
 
 /**

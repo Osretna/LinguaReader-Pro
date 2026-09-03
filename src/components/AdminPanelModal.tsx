@@ -111,40 +111,99 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     u.id.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const handleGrantPermission = async (userId: string, duration: 'lifetime' | number) => {
-    const res = AuthService.grantUserPermission(userId, duration, 'مدير التطبيق');
-    if (res.success) {
-      // Also update in Firebase Cloud
-      if (res.user) {
-        await FirebaseService.syncUserToCloud(res.user);
-      }
-      setNotice({ text: res.message, type: 'success' });
+  const handleGrantPermission = async (userOrId: AuthUser | string, duration: 'lifetime' | number) => {
+    const userObj = typeof userOrId === 'object' && userOrId !== null ? userOrId : (
+      (cloudUsers || []).find(u => u.id === userOrId || u.email.toLowerCase() === (userOrId as string).toLowerCase()) ||
+      AuthService.getAllUsers().find(u => u.id === userOrId || u.email.toLowerCase() === (userOrId as string).toLowerCase())
+    );
+
+    if (!userObj) {
+      setNotice({ text: 'المستخدم غير موجود', type: 'error' });
+      return;
+    }
+
+    const res = AuthService.grantUserPermission(userObj, duration, 'مدير التطبيق');
+    if (res.success && res.user) {
+      // Direct Firebase update in real time
+      await FirebaseService.syncUserToCloud(res.user);
+      await FirebaseService.updateUserSubscription(res.user.id, res.user.subscription);
+      
+      // Update local cloud state immediately
+      setCloudUsers(prev => prev ? prev.map(u => u.id === res.user!.id ? res.user! : u) : [res.user!]);
+      
+      setNotice({ text: duration === 'lifetime' ? 'تم تفعيل الوصول الدائم مدى الحياة بنجاح 🟢' : `تم تفعيل الاشتراك لمدة ${duration} يوم (100 ج.م) بنجاح 🟢`, type: 'success' });
       onRefreshData();
     } else {
       setNotice({ text: res.message, type: 'error' });
     }
   };
 
-  const handleResetTrial = async (userId: string) => {
-    const ok = AuthService.resetUserTrial(userId);
+  const handleResetTrial = async (userOrId: AuthUser | string) => {
+    const userObj = typeof userOrId === 'object' && userOrId !== null ? userOrId : (
+      (cloudUsers || []).find(u => u.id === userOrId || u.email.toLowerCase() === (userOrId as string).toLowerCase()) ||
+      AuthService.getAllUsers().find(u => u.id === userOrId || u.email.toLowerCase() === (userOrId as string).toLowerCase())
+    );
+
+    if (!userObj) {
+      setNotice({ text: 'المستخدم غير موجود', type: 'error' });
+      return;
+    }
+
+    const ok = AuthService.resetUserTrial(userObj);
     if (ok) {
-      const updatedUser = AuthService.getAllUsers().find(u => u.id === userId);
-      if (updatedUser) {
-        await FirebaseService.syncUserToCloud(updatedUser);
-      }
-      setNotice({ text: 'تمت إعادة 5 دقائق تجربة مجانية للمستخدم بنجاح', type: 'success' });
+      const trialEndsAt = new Date(Date.now() + 300 * 1000).toISOString();
+      const updatedUser: AuthUser = {
+        ...userObj,
+        subscription: {
+          ...userObj.subscription,
+          status: 'trial',
+          isExpired: false,
+          trialSecondsTotal: 300,
+          trialSecondsRemaining: 300,
+          trialEndsAt: trialEndsAt,
+          notes: 'تم تجديد 5 دقائق تجربة مجانية بواسطة المدير',
+        }
+      };
+      await FirebaseService.syncUserToCloud(updatedUser);
+      await FirebaseService.updateUserSubscription(updatedUser.id, updatedUser.subscription);
+      
+      setCloudUsers(prev => prev ? prev.map(u => u.id === updatedUser.id ? updatedUser : u) : [updatedUser]);
+      setNotice({ text: 'تمت إعادة 5 دقائق تجربة مجانية للمستخدم وتحديث حسابه سحابياً بنجاح 🟢', type: 'success' });
       onRefreshData();
+    } else {
+      setNotice({ text: 'تعذر تجديد التجربة للمستخدم', type: 'error' });
     }
   };
 
-  const handleRevoke = async (userId: string) => {
-    const ok = AuthService.revokeUserAccess(userId);
+  const handleRevoke = async (userOrId: AuthUser | string) => {
+    const userObj = typeof userOrId === 'object' && userOrId !== null ? userOrId : (
+      (cloudUsers || []).find(u => u.id === userOrId || u.email.toLowerCase() === (userOrId as string).toLowerCase()) ||
+      AuthService.getAllUsers().find(u => u.id === userOrId || u.email.toLowerCase() === (userOrId as string).toLowerCase())
+    );
+
+    if (!userObj) {
+      setNotice({ text: 'المستخدم غير موجود', type: 'error' });
+      return;
+    }
+
+    const ok = AuthService.revokeUserAccess(userObj);
     if (ok) {
-      const updatedUser = AuthService.getAllUsers().find(u => u.id === userId);
-      if (updatedUser) {
-        await FirebaseService.syncUserToCloud(updatedUser);
-      }
-      setNotice({ text: 'تم إيقاف صلاحية المستخدم وقفل الحساب', type: 'success' });
+      const updatedUser: AuthUser = {
+        ...userObj,
+        subscription: {
+          ...userObj.subscription,
+          status: 'expired',
+          isExpired: true,
+          trialSecondsRemaining: 0,
+          trialEndsAt: new Date().toISOString(),
+          notes: 'تم إيقاف الحساب وقفل التطبيق بواسطة المدير',
+        }
+      };
+      await FirebaseService.syncUserToCloud(updatedUser);
+      await FirebaseService.updateUserSubscription(updatedUser.id, updatedUser.subscription);
+      
+      setCloudUsers(prev => prev ? prev.map(u => u.id === updatedUser.id ? updatedUser : u) : [updatedUser]);
+      setNotice({ text: 'تم إيقاف صلاحية المستخدم وقفل الحساب لحظياً 🔴', type: 'success' });
       onRefreshData();
     }
   };
@@ -513,7 +572,7 @@ export const firebaseConfig = {
                             
                             {/* Grant 1 Month (100 EGP) */}
                             <button
-                              onClick={() => handleGrantPermission(user.id, 30)}
+                              onClick={() => handleGrantPermission(user, 30)}
                               className="px-2.5 py-1.5 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-200 transition cursor-pointer"
                               title="تفعيل شهر كامل مقابل 100 جنيه"
                             >
@@ -522,7 +581,7 @@ export const firebaseConfig = {
 
                             {/* Grant Lifetime Access */}
                             <button
-                              onClick={() => handleGrantPermission(user.id, 'lifetime')}
+                              onClick={() => handleGrantPermission(user, 'lifetime')}
                               className="px-2.5 py-1.5 rounded-lg bg-purple-50 hover:bg-purple-100 text-purple-800 text-xs font-bold border border-purple-200 transition cursor-pointer"
                               title="إتاحة وصول دائم مدى الحياة"
                             >
@@ -541,7 +600,7 @@ export const firebaseConfig = {
                                 />
                                 <button
                                   onClick={() => {
-                                    handleGrantPermission(user.id, parseInt(customDaysValue) || 30);
+                                    handleGrantPermission(user, parseInt(customDaysValue) || 30);
                                     setCustomDaysTargetId(null);
                                   }}
                                   className="px-2 py-1 rounded-lg bg-indigo-600 text-white text-xs font-bold cursor-pointer"
@@ -569,7 +628,7 @@ export const firebaseConfig = {
 
                             {/* Reset Trial (5 mins) */}
                             <button
-                              onClick={() => handleResetTrial(user.id)}
+                              onClick={() => handleResetTrial(user)}
                               className="p-1.5 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 transition cursor-pointer"
                               title="إعادة 5 دقائق تجربة مجانية"
                             >
@@ -579,7 +638,7 @@ export const firebaseConfig = {
                             {/* Revoke / Expire */}
                             {!isOwner && (
                               <button
-                                onClick={() => handleRevoke(user.id)}
+                                onClick={() => handleRevoke(user)}
                                 className="p-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 transition cursor-pointer"
                                 title="إيقاف الصلاحية وقفل التطبيق عليه"
                               >

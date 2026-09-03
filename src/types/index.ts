@@ -123,6 +123,7 @@ export interface UserSubscription {
   expiresAt: string | null; // ISO date string or null for lifetime
   trialSecondsTotal: number; // 300 seconds (5 minutes)
   trialSecondsRemaining: number;
+  trialEndsAt?: string | null; // Exact ISO timestamp when 5-min trial expires
   isExpired: boolean;
   activationCodeUsed?: string;
   notes?: string;

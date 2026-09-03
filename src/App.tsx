@@ -70,9 +70,21 @@ export default function App() {
         ) {
           AuthService.unlockDevice();
           setIsForceUnlocked(true);
+          AuthService.saveUser(updatedUser, false);
+          setCurrentUser(updatedUser);
+        } else if (updatedUser.subscription.status === 'expired') {
+          AuthService.lockDevice();
+          setCurrentUser(prev => prev ? { 
+            ...prev, 
+            subscription: { ...prev.subscription, status: 'expired', isExpired: true, trialSecondsRemaining: 0 } 
+          } : null);
+        } else if (updatedUser.subscription.status === 'trial') {
+          // Admin renewed 5-minute trial remotely
+          AuthService.unlockDevice();
+          setIsForceUnlocked(false);
+          AuthService.saveUser(updatedUser, false);
+          setCurrentUser(updatedUser);
         }
-        AuthService.saveUser(updatedUser);
-        setCurrentUser(updatedUser);
       }
     });
 
@@ -81,29 +93,31 @@ export default function App() {
     };
   }, [currentUser?.id]);
 
-  // 5-Minute Trial Timer Interval
+  // 5-Minute Trial Timer Interval (Smooth 1-second ticks based on absolute timestamp)
   useEffect(() => {
+    if (isForceUnlocked) return;
     if (currentUser?.role === 'admin' || currentUser?.email?.toLowerCase() === OWNER_EMAIL.toLowerCase()) return;
     if (currentUser && currentUser.subscription.status !== 'trial') return;
 
     const timer = setInterval(() => {
-      // Tick persistent device trial
-      const deviceSec = AuthService.tickDeviceTrial();
-
-      // Tick logged-in user trial
+      // 1. Tick logged-in user trial
       if (currentUser && currentUser.subscription.status === 'trial') {
         setCurrentUser((prev) => {
-          if (!prev) return null;
+          if (!prev || prev.role === 'admin' || prev.subscription.status !== 'trial') return prev;
           const updated = AuthService.tickTrial(prev);
           return { ...updated };
         });
-      } else if (deviceSec <= 0) {
-        AuthService.lockDevice();
+      } else if (!currentUser) {
+        // 2. Tick persistent device trial for guests
+        const deviceSec = AuthService.tickDeviceTrial();
+        if (deviceSec <= 0) {
+          AuthService.lockDevice();
+        }
       }
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [currentUser?.subscription?.status, currentUser?.subscription?.isExpired, currentUser?.role]);
+  }, [currentUser?.id, currentUser?.subscription?.status, currentUser?.subscription?.isExpired, currentUser?.role, isForceUnlocked]);
 
   const handleUpdateSettings = (newPartial: Partial<ReaderSettings>) => {
     const updated = StorageService.saveSettings(newPartial);

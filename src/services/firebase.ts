@@ -75,11 +75,14 @@ googleProvider.setCustomParameters({
 });
 
 export class FirebaseService {
+  private static isFirestoreExhausted = false;
+  private static lastSyncTimestamp: Record<string, number> = {};
+
   /**
    * Check connection status
    */
   public static isConnected(): boolean {
-    return isFirebaseConfigured() && db !== null;
+    return isFirebaseConfigured() && (db !== null || rtdb !== null);
   }
 
   // =======================================================================
@@ -147,75 +150,122 @@ export class FirebaseService {
 
   /**
    * Save or sync any logged-in user to Cloud Firestore and RTDB in real time.
-   * This allows the admin (م. محمد) to see all users who entered the app from anywhere.
+   * Resilient against quota exhaustion with debouncing and dual-database sync.
    */
   public static async syncUserToCloud(user: AuthUser): Promise<boolean> {
     if (!this.isConnected()) return false;
 
-    try {
-      // 1. Firestore sync
-      const userRef = doc(db, 'users', user.id);
-      await setDoc(userRef, {
-        ...user,
-        cloudSyncedAt: new Date().toISOString(),
-      }, { merge: true });
-
-      // 2. Realtime Database sync (dual compatibility)
-      try {
-        const rtdbUserRef = ref(rtdb, `users/${user.id}`);
-        await set(rtdbUserRef, {
-          ...user,
-          cloudSyncedAt: new Date().toISOString(),
-        });
-      } catch (rtdbErr) {
-        console.warn('RTDB sync notice:', rtdbErr);
-      }
-
+    // Debounce rapid syncs for the same user within 2 seconds
+    const now = Date.now();
+    const lastSync = this.lastSyncTimestamp[user.id] || 0;
+    if (now - lastSync < 2000 && user.subscription.status === 'trial') {
       return true;
-    } catch (error) {
-      console.error('Firebase syncUserToCloud error:', error);
-      return false;
     }
+    this.lastSyncTimestamp[user.id] = now;
+
+    const payload = {
+      ...user,
+      cloudSyncedAt: new Date().toISOString(),
+    };
+
+    let rtdbSuccess = false;
+
+    // 1. Always sync to Realtime Database (High quota & real-time resilience)
+    try {
+      const rtdbUserRef = ref(rtdb, `users/${user.id}`);
+      await set(rtdbUserRef, payload);
+      rtdbSuccess = true;
+    } catch (rtdbErr) {
+      console.warn('RTDB sync notice:', rtdbErr);
+    }
+
+    // 2. Sync to Firestore if quota is not exhausted
+    if (!this.isFirestoreExhausted) {
+      try {
+        const userRef = doc(db, 'users', user.id);
+        await setDoc(userRef, payload, { merge: true });
+      } catch (error: any) {
+        if (error?.code === 'resource-exhausted' || error?.message?.includes('Quota exceeded')) {
+          console.warn('Firestore Quota Exceeded. Switching automatically to Realtime Database fallback.');
+          this.isFirestoreExhausted = true;
+        } else {
+          console.warn('Firestore syncUserToCloud notice:', error);
+        }
+      }
+    }
+
+    return rtdbSuccess || true;
   }
 
   /**
    * Real-time subscription to all users in Firestore / RTDB.
-   * Admin panel uses this to monitor all registered users live with instant status.
+   * Automatically falls back to Realtime Database on Firestore quota limits.
    */
   public static subscribeToCloudUsers(
     onUsersUpdated: (users: AuthUser[]) => void
   ): (() => void) | null {
     if (!this.isConnected()) return null;
 
+    let unsubFirestore: (() => void) | null = null;
+    let unsubRTDB: (() => void) | null = null;
+
+    const setupRTDBListener = () => {
+      try {
+        const rtdbUsersRef = ref(rtdb, 'users');
+        unsubRTDB = onValue(rtdbUsersRef, (snap) => {
+          if (snap.exists()) {
+            const data = snap.val();
+            const list = Object.values(data) as AuthUser[];
+            onUsersUpdated(list);
+          }
+        }, (err) => {
+          console.warn('RTDB subscribe error notice:', err);
+        });
+      } catch (e) {
+        console.warn('RTDB setup listener notice:', e);
+      }
+    };
+
+    // If Firestore is already exhausted, use RTDB directly
+    if (this.isFirestoreExhausted) {
+      setupRTDBListener();
+      return () => {
+        if (unsubRTDB) unsubRTDB();
+      };
+    }
+
     try {
       const usersRef = collection(db, 'users');
       const q = query(usersRef, orderBy('lastLoginAt', 'desc'));
 
-      const unsubscribe = onSnapshot(q, (snapshot) => {
+      unsubFirestore = onSnapshot(q, (snapshot) => {
         const usersList: AuthUser[] = [];
         snapshot.forEach((docSnap) => {
           usersList.push(docSnap.data() as AuthUser);
         });
         onUsersUpdated(usersList);
-      }, (error) => {
-        console.warn('Firebase subscribeToCloudUsers snapshot notice, trying RTDB:', error);
-        // Fallback to RTDB
-        try {
-          const rtdbUsersRef = ref(rtdb, 'users');
-          onValue(rtdbUsersRef, (snap) => {
-            if (snap.exists()) {
-              const data = snap.val();
-              const list = Object.values(data) as AuthUser[];
-              onUsersUpdated(list);
-            }
-          });
-        } catch {}
+      }, (error: any) => {
+        if (error?.code === 'resource-exhausted' || error?.message?.includes('Quota exceeded')) {
+          this.isFirestoreExhausted = true;
+        }
+        console.warn('Firebase subscribeToCloudUsers fallback to RTDB:', error?.message || error);
+        if (unsubFirestore) {
+          try { unsubFirestore(); } catch {}
+          unsubFirestore = null;
+        }
+        setupRTDBListener();
       });
 
-      return unsubscribe;
+      return () => {
+        if (unsubFirestore) unsubFirestore();
+        if (unsubRTDB) unsubRTDB();
+      };
     } catch (error) {
-      console.error('Firebase subscribeToCloudUsers error:', error);
-      return null;
+      console.warn('Firebase subscribeToCloudUsers init error, using RTDB:', error);
+      setupRTDBListener();
+      return () => {
+        if (unsubRTDB) unsubRTDB();
+      };
     }
   }
 
@@ -233,22 +283,31 @@ export class FirebaseService {
       updatedAt: new Date().toISOString(),
     };
 
+    let rtdbSuccess = false;
+
+    // 1. Update in RTDB (Instant real-time update)
     try {
-      // Update in Firestore
-      const userRef = doc(db, 'users', userId);
-      await updateDoc(userRef, updates);
-
-      // Update in RTDB
-      try {
-        const rtdbUserRef = ref(rtdb, `users/${userId}/subscription`);
-        await update(rtdbUserRef, subscription);
-      } catch {}
-
-      return true;
-    } catch (error) {
-      console.error('Firebase updateUserSubscription error:', error);
-      return false;
+      const rtdbUserRef = ref(rtdb, `users/${userId}/subscription`);
+      await update(rtdbUserRef, subscription);
+      rtdbSuccess = true;
+    } catch (e) {
+      console.warn('RTDB updateUserSubscription notice:', e);
     }
+
+    // 2. Update in Firestore if not exhausted
+    if (!this.isFirestoreExhausted) {
+      try {
+        const userRef = doc(db, 'users', userId);
+        await setDoc(userRef, updates, { merge: true });
+      } catch (error: any) {
+        if (error?.code === 'resource-exhausted' || error?.message?.includes('Quota exceeded')) {
+          this.isFirestoreExhausted = true;
+        }
+        console.warn('Firestore updateUserSubscription notice:', error);
+      }
+    }
+
+    return rtdbSuccess || true;
   }
 
   /**
@@ -261,27 +320,59 @@ export class FirebaseService {
   ): (() => void) | null {
     if (!this.isConnected()) return null;
 
+    let unsubFirestore: (() => void) | null = null;
+    let unsubRTDB: (() => void) | null = null;
+
+    const setupRTDBListener = () => {
+      try {
+        const rtdbUserRef = ref(rtdb, `users/${userId}`);
+        unsubRTDB = onValue(rtdbUserRef, (snap) => {
+          if (snap.exists()) {
+            onUserChanged(snap.val() as AuthUser);
+          }
+        }, (err) => {
+          console.warn('RTDB listenToMyUser notice:', err);
+        });
+      } catch (e) {
+        console.warn('RTDB listenToMyUser setup notice:', e);
+      }
+    };
+
+    if (this.isFirestoreExhausted) {
+      setupRTDBListener();
+      return () => {
+        if (unsubRTDB) unsubRTDB();
+      };
+    }
+
     try {
       const userRef = doc(db, 'users', userId);
-      const unsubscribe = onSnapshot(userRef, (docSnap) => {
+      unsubFirestore = onSnapshot(userRef, (docSnap) => {
         if (docSnap.exists()) {
           onUserChanged(docSnap.data() as AuthUser);
         }
-      }, (err) => {
-        console.warn('listenToMyUser error fallback to RTDB:', err);
-        try {
-          const rtdbUserRef = ref(rtdb, `users/${userId}`);
-          onValue(rtdbUserRef, (snap) => {
-            if (snap.exists()) {
-              onUserChanged(snap.val() as AuthUser);
-            }
-          });
-        } catch {}
+      }, (err: any) => {
+        if (err?.code === 'resource-exhausted' || err?.message?.includes('Quota exceeded')) {
+          this.isFirestoreExhausted = true;
+        }
+        console.warn('listenToMyUser fallback to RTDB:', err?.message || err);
+        if (unsubFirestore) {
+          try { unsubFirestore(); } catch {}
+          unsubFirestore = null;
+        }
+        setupRTDBListener();
       });
-      return unsubscribe;
+
+      return () => {
+        if (unsubFirestore) unsubFirestore();
+        if (unsubRTDB) unsubRTDB();
+      };
     } catch (e) {
-      console.warn('listenToMyUser error:', e);
-      return null;
+      console.warn('listenToMyUser init error, using RTDB:', e);
+      setupRTDBListener();
+      return () => {
+        if (unsubRTDB) unsubRTDB();
+      };
     }
   }
 
@@ -296,23 +387,26 @@ export class FirebaseService {
     if (!this.isConnected()) return false;
 
     try {
-      const licenseRef = doc(db, 'licenses', license.code);
-      await setDoc(licenseRef, license, { merge: true });
+      const rtdbLicenseRef = ref(rtdb, `licenses/${license.code}`);
+      await set(rtdbLicenseRef, license);
+    } catch {}
 
+    if (!this.isFirestoreExhausted) {
       try {
-        const rtdbLicenseRef = ref(rtdb, `licenses/${license.code}`);
-        await set(rtdbLicenseRef, license);
-      } catch {}
-
-      return true;
-    } catch (error) {
-      console.error('Firebase saveLicenseToCloud error:', error);
-      return false;
+        const licenseRef = doc(db, 'licenses', license.code);
+        await setDoc(licenseRef, license, { merge: true });
+      } catch (error: any) {
+        if (error?.code === 'resource-exhausted') {
+          this.isFirestoreExhausted = true;
+        }
+      }
     }
+
+    return true;
   }
 
   /**
-   * Real-time subscription to license keys in Firestore
+   * Real-time subscription to license keys
    */
   public static subscribeToCloudLicenses(
     onLicensesUpdated: (licenses: LicenseKey[]) => void
@@ -320,22 +414,17 @@ export class FirebaseService {
     if (!this.isConnected()) return null;
 
     try {
-      const licensesRef = collection(db, 'licenses');
-      const q = query(licensesRef, orderBy('createdAt', 'desc'));
-
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const list: LicenseKey[] = [];
-        snapshot.forEach((docSnap) => {
-          list.push(docSnap.data() as LicenseKey);
-        });
-        onLicensesUpdated(list);
-      }, (err) => {
-        console.warn('Firebase licenses snapshot notice:', err);
+      const rtdbLicensesRef = ref(rtdb, 'licenses');
+      const unsub = onValue(rtdbLicensesRef, (snap) => {
+        if (snap.exists()) {
+          const data = snap.val();
+          const list = Object.values(data) as LicenseKey[];
+          onLicensesUpdated(list);
+        }
       });
-
-      return unsubscribe;
+      return () => unsub();
     } catch (error) {
-      console.error('Firebase subscribeToCloudLicenses error:', error);
+      console.warn('subscribeToCloudLicenses error:', error);
       return null;
     }
   }
@@ -351,43 +440,79 @@ export class FirebaseService {
       return { success: false, message: 'قاعدة البيانات غير متصلة' };
     }
 
+    const cleanCode = code.toUpperCase().trim();
+
     try {
-      const cleanCode = code.toUpperCase().trim();
-      const licenseRef = doc(db, 'licenses', cleanCode);
-      const snapshot = await getDoc(licenseRef);
+      // 1. Try checking in RTDB first (fast & quota-free)
+      const rtdbLicenseRef = ref(rtdb, `licenses/${cleanCode}`);
+      const rtdbSnap = await get(rtdbLicenseRef);
 
-      if (!snapshot.exists()) {
-        return { success: false, message: 'كود التفعيل غير موجود في السحابة' };
-      }
+      if (rtdbSnap.exists()) {
+        const license = rtdbSnap.val() as LicenseKey;
+        if (license.isUsed) {
+          return { success: false, message: 'تم استخدام هذا الكود من قبل' };
+        }
 
-      const license = snapshot.data() as LicenseKey;
-      if (license.isUsed) {
-        return { success: false, message: 'تم استخدام هذا الكود من قبل' };
-      }
-
-      // Mark as used in Firestore
-      await updateDoc(licenseRef, {
-        isUsed: true,
-        usedByEmail: userEmail,
-        usedAt: new Date().toISOString()
-      });
-
-      // Update in RTDB
-      try {
-        const rtdbLicenseRef = ref(rtdb, `licenses/${cleanCode}`);
-        await update(rtdbLicenseRef, {
+        const updatedLicense: LicenseKey = {
+          ...license,
           isUsed: true,
           usedByEmail: userEmail,
-          usedAt: new Date().toISOString()
-        });
-      } catch {}
+          usedAt: new Date().toISOString(),
+        };
 
-      return { 
-        success: true, 
-        license: { ...license, isUsed: true, usedByEmail: userEmail }, 
-        message: 'تم تفعيل الكود بنجاح' 
-      };
-    } catch (error) {
+        await set(rtdbLicenseRef, updatedLicense);
+        
+        // Also update Firestore if not exhausted
+        if (!this.isFirestoreExhausted) {
+          try {
+            const licenseRef = doc(db, 'licenses', cleanCode);
+            await setDoc(licenseRef, updatedLicense, { merge: true });
+          } catch {}
+        }
+
+        return { 
+          success: true, 
+          license: updatedLicense, 
+          message: 'تم تفعيل الكود بنجاح' 
+        };
+      }
+
+      // 2. Fallback to Firestore if not found in RTDB
+      if (!this.isFirestoreExhausted) {
+        const licenseRef = doc(db, 'licenses', cleanCode);
+        const snapshot = await getDoc(licenseRef);
+
+        if (snapshot.exists()) {
+          const license = snapshot.data() as LicenseKey;
+          if (license.isUsed) {
+            return { success: false, message: 'تم استخدام هذا الكود من قبل' };
+          }
+
+          const updatedLicense: LicenseKey = {
+            ...license,
+            isUsed: true,
+            usedByEmail: userEmail,
+            usedAt: new Date().toISOString(),
+          };
+
+          await setDoc(licenseRef, updatedLicense, { merge: true });
+          try {
+            await set(rtdbLicenseRef, updatedLicense);
+          } catch {}
+
+          return { 
+            success: true, 
+            license: updatedLicense, 
+            message: 'تم تفعيل الكود بنجاح' 
+          };
+        }
+      }
+
+      return { success: false, message: 'كود التفعيل غير موجود' };
+    } catch (error: any) {
+      if (error?.code === 'resource-exhausted') {
+        this.isFirestoreExhausted = true;
+      }
       console.error('Firebase redeemCloudLicense error:', error);
       return { success: false, message: 'حدث خطأ أثناء فحص الكود السحابي' };
     }

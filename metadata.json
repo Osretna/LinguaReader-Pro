@@ -1,0 +1,6 @@
+{
+  "name": "LinguaReader Pro",
+  "description": "منصة عالمية لتعليم اللغات بالقراءة الذكية مع ترجمة فورية، نطق صوتي، ونظام المفردات الذكي (SRS)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

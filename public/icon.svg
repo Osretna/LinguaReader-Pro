@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4f46e5" />
+      <stop offset="50%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#7c3aed" />
+    </linearGradient>
+    <linearGradient id="bubbleGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="100%" stop-color="#e0e7ff" />
+    </linearGradient>
+    <filter id="dropShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#1e1b4b" flood-opacity="0.3" />
+    </filter>
+  </defs>
+
+  <!-- Background rounded squircle with safe zone -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" />
+
+  <!-- Inner glow & subtle pattern circle -->
+  <circle cx="256" cy="256" r="180" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="3" />
+
+  <!-- Speech bubble with drop shadow -->
+  <g filter="url(#dropShadow)">
+    <path d="M 290 120 C 370 120 430 170 430 230 C 430 290 370 340 290 340 C 270 340 250 336 235 328 L 190 345 L 205 305 C 165 285 150 260 150 230 C 150 170 210 120 290 120 Z"
+          fill="url(#bubbleGrad)" />
+    
+    <!-- Sound/Translation waves inside bubble -->
+    <path d="M 320 190 C 335 200 345 215 345 230 C 345 245 335 260 320 270" 
+          stroke="#6366f1" stroke-width="6" stroke-linecap="round" fill="none" />
+    <path d="M 345 175 C 370 190 380 210 380 230 C 380 250 370 270 345 285" 
+          stroke="#4f46e5" stroke-width="6" stroke-linecap="round" fill="none" />
+  </g>
+
+  <!-- Open Book Base in foreground -->
+  <g filter="url(#dropShadow)" transform="translate(0, 40)">
+    <!-- Left Page -->
+    <path d="M 256 340 C 210 320 150 320 100 335 L 100 230 C 150 215 210 215 256 235 Z" 
+          fill="#ffffff" />
+    <!-- Right Page -->
+    <path d="M 256 340 C 302 320 362 320 412 335 L 412 230 C 362 215 302 215 256 235 Z" 
+          fill="#f8fafc" />
+    <!-- Spine divider -->
+    <path d="M 256 235 L 256 345" stroke="#4338ca" stroke-width="6" stroke-linecap="round" />
+    
+    <!-- Text lines on left page -->
+    <line x1="130" y1="255" x2="225" y2="255" stroke="#cbd5e1" stroke-width="5" stroke-linecap="round" />
+    <line x1="130" y1="280" x2="225" y2="280" stroke="#cbd5e1" stroke-width="5" stroke-linecap="round" />
+    <line x1="130" y1="305" x2="195" y2="305" stroke="#cbd5e1" stroke-width="5" stroke-linecap="round" />
+
+    <!-- Text lines on right page -->
+    <line x1="287" y1="255" x2="382" y2="255" stroke="#cbd5e1" stroke-width="5" stroke-linecap="round" />
+    <line x1="287" y1="280" x2="382" y2="280" stroke="#cbd5e1" stroke-width="5" stroke-linecap="round" />
+    <line x1="287" y1="305" x2="345" y2="305" stroke="#cbd5e1" stroke-width="5" stroke-linecap="round" />
+  </g>
+
+  <!-- Stylized "L" Emblem for LinguaReader -->
+  <g transform="translate(210, 160)">
+    <path d="M 15 15 L 15 85 L 65 85" 
+          fill="none" 
+          stroke="#4f46e5" 
+          stroke-width="16" 
+          stroke-linecap="round" 
+          stroke-linejoin="round" />
+    <circle cx="15" cy="15" r="5" fill="#4338ca" />
+    <circle cx="65" cy="85" r="5" fill="#6366f1" />
+  </g>
+</svg>

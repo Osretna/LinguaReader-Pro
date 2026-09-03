@@ -10,10 +10,8 @@ import { OfflineIndicator } from './components/OfflineIndicator';
 import { VoiceLevelTest } from './components/VoiceLevelTest';
 import { ReadingMasteryGuideModal } from './components/ReadingMasteryGuideModal';
 import { GoogleAuthModal } from './components/GoogleAuthModal';
-import { SubscriptionLockModal } from './components/SubscriptionLockModal';
 import { LockoutScreen } from './components/LockoutScreen';
 import { AdminPanelModal } from './components/AdminPanelModal';
-import { GlobalAppLockModal } from './components/GlobalAppLockModal';
 import { TrialBanner } from './components/TrialBanner';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { ContentItem, ReaderSettings, UserStats, CEFRLevel, AuthUser } from './types';
@@ -35,6 +33,7 @@ export default function App() {
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(() => !AuthService.getCurrentUser());
   const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const [isForceUnlocked, setIsForceUnlocked] = useState(false);
+  const [nowTimestamp, setNowTimestamp] = useState<number>(() => Date.now());
 
   // License configuration state for app duration and stop controls
   const [licenseConfig, setLicenseConfig] = useState<LicenseConfig>(() => loadLicenseConfig());
@@ -192,11 +191,11 @@ export default function App() {
 
   // 5-Minute Trial Timer Interval (Smooth 1-second ticks based on absolute timestamp)
   useEffect(() => {
-    if (isForceUnlocked) return;
-    if (currentUser?.role === 'admin' || currentUser?.email?.toLowerCase() === OWNER_EMAIL.toLowerCase()) return;
-    if (currentUser && currentUser.subscription.status !== 'trial') return;
-
     const timer = setInterval(() => {
+      setNowTimestamp(Date.now());
+      if (isForceUnlocked) return;
+      if (currentUser?.role === 'admin' || currentUser?.email?.toLowerCase() === OWNER_EMAIL.toLowerCase()) return;
+
       // 1. Tick logged-in user trial
       if (currentUser && currentUser.subscription.status === 'trial') {
         setCurrentUser((prev) => {
@@ -274,9 +273,16 @@ export default function App() {
   const isUserExpired = Boolean(
     currentUser && (currentUser.subscription?.isExpired || currentUser.subscription?.status === 'expired')
   );
+  const isLicenseExpired = Boolean(licenseConfig.expiresAt && licenseConfig.expiresAt <= nowTimestamp);
 
   // The lock screen disappears immediately when unlocked
-  const isLocked = !isForceUnlocked && !hasActiveAccess && !isDevicePermanentlyUnlocked && (isDeviceTrialLocked || isUserExpired || licenseConfig.isManuallyStopped);
+  const isLocked = !isForceUnlocked && !hasActiveAccess && (
+    globalAppState.isAppLocked ||
+    licenseConfig.isManuallyStopped ||
+    (isLicenseExpired && !isDevicePermanentlyUnlocked) ||
+    isUserExpired ||
+    (!isDevicePermanentlyUnlocked && isDeviceTrialLocked)
+  );
 
   return (
     <div 
@@ -445,16 +451,9 @@ export default function App() {
         </div>
       )}
 
-      {/* Global App Lock (Kill Switch) Modal */}
-      <GlobalAppLockModal
-        isLocked={globalAppState.isAppLocked && currentUser?.role !== 'admin' && currentUser?.email?.toLowerCase() !== OWNER_EMAIL.toLowerCase()}
-        reason={globalAppState.lockReason}
-        isArabic={isArabic}
-        onAdminUnlock={() => setGlobalAppState(prev => ({ ...prev, isAppLocked: false }))}
-      />
-
       {/* Full-Screen Lockout Barrier:
-          Blocks the entire app when locked/trial expired, displays the exact WhatsApp message,
+          Blocks the entire app when locked, stopped, or trial/validity expired.
+          Displays the exact WhatsApp message and device ID,
           and allows admin login with original code password (4704600vdlhs@) to open original Admin Panel */}
       {isLocked && (
         <LockoutScreen
@@ -469,6 +468,7 @@ export default function App() {
           onAdminSuccess={handleAdminSuccess}
           userEmail={currentUser?.email}
           onUnlock={handleUnlockSuccess}
+          customReason={globalAppState.lockReason}
         />
       )}
 

@@ -33,6 +33,7 @@ interface LockoutScreenProps {
   onAdminSuccess?: (adminUser: AuthUser) => void;
   userEmail?: string;
   onUnlock?: () => void;
+  customReason?: string;
 }
 
 export const LockoutScreen: React.FC<LockoutScreenProps> = ({
@@ -42,6 +43,7 @@ export const LockoutScreen: React.FC<LockoutScreenProps> = ({
   onAdminSuccess,
   userEmail,
   onUnlock,
+  customReason,
 }) => {
   const [copiedDevice, setCopiedDevice] = useState(false);
   const [activationKeyInput, setActivationKeyInput] = useState('');
@@ -157,7 +159,7 @@ export const LockoutScreen: React.FC<LockoutScreenProps> = ({
   return (
     <div 
       id="full-screen-lockout-overlay"
-      className="fixed inset-0 z-[99999] bg-slate-950/95 text-slate-100 flex flex-col items-center justify-center p-4 sm:p-6 overflow-y-auto select-none"
+      className="fixed inset-0 z-[99999] bg-slate-950/98 text-slate-100 flex flex-col items-center justify-center p-4 sm:p-6 overflow-y-auto select-none backdrop-blur-2xl"
       dir="rtl"
     >
       {/* Background ambient lighting effects */}
@@ -166,7 +168,7 @@ export const LockoutScreen: React.FC<LockoutScreenProps> = ({
         <div className="absolute -bottom-40 -left-40 w-96 h-96 bg-emerald-600/10 rounded-full blur-3xl"></div>
       </div>
 
-      <div className="relative w-full max-w-xl bg-slate-900/90 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl shadow-red-950/40 text-center backdrop-blur-xl z-10 my-auto">
+      <div className="relative w-full max-w-xl bg-slate-900/95 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl shadow-red-950/40 text-center backdrop-blur-xl z-10 my-auto">
         
         {/* Urgent Warning Status Icon */}
         <div className="mx-auto w-20 h-20 rounded-2xl bg-gradient-to-br from-red-500/20 to-amber-500/10 border border-red-500/30 flex items-center justify-center mb-6 shadow-inner relative">
@@ -188,7 +190,7 @@ export const LockoutScreen: React.FC<LockoutScreenProps> = ({
           id="lockout-main-message"
           className="text-2xl sm:text-3xl font-bold tracking-tight text-white mb-4 leading-snug"
         >
-          {config.customMessage || 'بالرجاء التواصل مع المسؤل علي الواتساب لفتح التطبيق مرة اخري'}
+          {customReason || config.customMessage || 'بالرجاء التواصل مع المسؤل علي الواتساب لفتح التطبيق مرة اخري'}
         </h1>
 
         <p className="text-slate-400 text-sm sm:text-base leading-relaxed mb-6 max-w-md mx-auto">

@@ -29,6 +29,12 @@ import {
   OWNER_PHONE, 
   MONTHLY_PRICE_EGP 
 } from '../services/auth';
+import { 
+  stopApplicationNow, 
+  resumeApplication, 
+  addTimeMinutes, 
+  loadLicenseConfig 
+} from '../utils/licenseManager';
 import { FirebaseService, isFirebaseConfigured, firebaseConfig } from '../services/firebase';
 import { AuthUser, LicenseKey, SubscriptionPlan } from '../types';
 
@@ -285,12 +291,20 @@ export const AdminPanelModal: React.FC<AdminPanelModalProps> = ({
     try {
       await FirebaseService.setGlobalAppLock(nextLocked, lockReasonInput, currentUser?.email || 'admin');
       setIsAppLockedGlobally(nextLocked);
+      if (nextLocked) {
+        stopApplicationNow(lockReasonInput || 'إيقاف وقفل التطبيق بواسطة الإدارة');
+        AuthService.lockDevice();
+      } else {
+        resumeApplication();
+        AuthService.unlockDevice();
+      }
       setNotice({
         text: nextLocked 
           ? 'تم قفل التطبيق بالكامل عن جميع المستخدمين لحظياً 🔒' 
           : 'تم فتح وإلغاء قفل التطبيق لجميع المستخدمين لحظياً 🟢',
         type: 'success',
       });
+      onRefreshData();
     } catch (e) {
       setNotice({ text: 'فشل تغيير حالة قفل التطبيق', type: 'error' });
     } finally {
@@ -604,6 +618,88 @@ export const firebaseConfig = {
                       className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-[11px] font-bold transition cursor-pointer shrink-0"
                     >
                       {isArabic ? 'حفظ السبب' : 'Save Reason'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* ⏱️ Direct License & Device Time Controls */}
+                <div className="p-3.5 rounded-2xl bg-slate-100 border border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2 text-slate-800">
+                    <Clock className="w-4 h-4 text-indigo-600 shrink-0" />
+                    <div>
+                      <span className="font-bold block">
+                        {isArabic ? 'التحكم المباشر في ترخيص التطبيق والأجهزة:' : 'Device & License Time Control:'}
+                      </span>
+                      <span className="text-[11px] text-slate-500">
+                        {isArabic ? 'إضافة وقت تجريبي، تفعيل شهر، أو فتح الحجب فوري' : 'Add trial time, monthly pass, or instant unlock'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        addTimeMinutes(5, 'تمديد تجربة 5 دقائق من الإدارة');
+                        AuthService.unlockDevice();
+                        onRefreshData();
+                        setNotice({ text: 'تمت إضافة 5 دقائق تجربة للجهاز فوراً 🟢', type: 'success' });
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-white border border-slate-300 hover:bg-indigo-50 hover:border-indigo-300 text-indigo-900 font-bold transition cursor-pointer text-xs"
+                    >
+                      +5 دقائق تجربة
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        addTimeMinutes(1440, 'تمديد 1 يوم من الإدارة');
+                        AuthService.unlockDevice();
+                        onRefreshData();
+                        setNotice({ text: 'تم تفعيل 1 يوم كامل للجهاز فوراً 🟢', type: 'success' });
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-white border border-slate-300 hover:bg-emerald-50 hover:border-emerald-300 text-emerald-900 font-bold transition cursor-pointer text-xs"
+                    >
+                      +1 يوم
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        addTimeMinutes(30 * 1440, 'تفعيل اشتراك شهري 30 يوم');
+                        AuthService.unlockDevice();
+                        onRefreshData();
+                        setNotice({ text: 'تم تفعيل 30 يوم (شهر) للجهاز فوراً 🟢', type: 'success' });
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold transition cursor-pointer text-xs shadow-xs"
+                    >
+                      +30 يوم (شهر)
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        resumeApplication();
+                        AuthService.unlockDevice();
+                        onRefreshData();
+                        setNotice({ text: 'تم تشغيل التطبيق وفتح الحجب فوراً 🟢', type: 'success' });
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold transition cursor-pointer text-xs shadow-xs"
+                    >
+                      تشغيل وفتح الحجب 🟢
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        stopApplicationNow('إيقاف يدوي فوري من لوحة الإدارة');
+                        AuthService.lockDevice();
+                        onRefreshData();
+                        setNotice({ text: 'تم إيقاف وحجب التطبيق فوراً 🔴', type: 'error' });
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold transition cursor-pointer text-xs shadow-xs"
+                    >
+                      إيقاف وحجب التطبيق 🔴
                     </button>
                   </div>
                 </div>

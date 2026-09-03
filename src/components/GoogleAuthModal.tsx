@@ -29,8 +29,6 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isAdminPasswordModalOpen, setIsAdminPasswordModalOpen] = useState(false);
 
-  if (!isOpen) return null;
-
   // Real Google Sign In via Firebase
   const handleRealGoogleSignIn = async () => {
     setIsSubmitting(true);
@@ -155,6 +153,7 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
   };
 
   useEffect(() => {
+    if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && canClose) {
         onClose();
@@ -162,7 +161,9 @@ export const GoogleAuthModal: React.FC<GoogleAuthModalProps> = ({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [canClose, onClose]);
+  }, [isOpen, canClose, onClose]);
+
+  if (!isOpen) return null;
 
   return (
     <div 
